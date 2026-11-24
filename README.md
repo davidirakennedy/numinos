@@ -8,8 +8,8 @@ Numin from its menu. Mac only for now, as AU and VST3.
 
 ## The Numins
 
-- **[Honey](numins/Honey)**: vocal dynamics, one knob. It keeps a vocal from
-  lurching in loudness and otherwise tries to leave it alone. *In the making.*
+- **[Honey](numins/Honey)**: vocal dynamics, one knob. Allows you to transparently
+control percieved variation in percieved loudness over time. *In the making.*
 
 More to come.
 

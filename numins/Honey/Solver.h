@@ -16,6 +16,7 @@ class Solver
 
     // The most neighbours on each side that can count. Their weights fade with distance
     // (contextSeconds), so this is a ceiling on context, not how much is actually used.
+    // I did dabble with some different values here. This may end up getting exposed as a param.
     static constexpr int kMaxNeighbours = 6;
 
     // `viscosityWeight` is the balance between the two (lambda). `contextSeconds` is how far
@@ -95,7 +96,7 @@ class Solver
     
 
     // neighbours shorter than this count less, basically a safeguard against transients overweighting the algorithm
-    // in one direction or another when in reality they have much less percieved weight on our ears
+    // in one direction or another when in reality they have much less impact on percieved loudness to our ears
     static constexpr double kWordSeconds = 0.3;
     static constexpr int kSolverIterations = 500;
 };

@@ -8,6 +8,8 @@ namespace numinos::honey
 // target, the second follows the first. Together every move is an S-curve: it begins with
 // almost no acceleration (too gently to notice), commits through the middle, and settles
 // without overshoot. Cuts and releases share the shape; releases can be made slower.
+// this is the Brennan Monorail inspired design that allows us to get away with a little more gain attentuation
+// but all transparently in a way that doesn't feel like clamping or compression.
 class GainFollower
 {
   public:

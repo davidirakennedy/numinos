@@ -101,6 +101,8 @@ class Segmenter
     }
 
     // The quietest 50 ms block in the last 10 s, never below -70 dB. Digital silence is skipped.
+    // This made need some work because if a vocal is trimmed in the beginning such that there is no
+    // lead-in or silence the actual onset of the vocal would probably be treated as silence?
     void updateNoiseFloor(double power)
     {
         blockPowerSum += power;
@@ -148,6 +150,8 @@ class Segmenter
     }
 
     // A valley: the lowest point nearby, at least kValleyDepthDb below the peaks on both sides.
+    // This could probably use some fine-tuning. And ultimately, it probably doesn't need to 1:1 conform
+    // with syllables or words necessarily, we just need smooth behavior.
     bool isValley(int64_t f)
     {
         const double here = fastDb[f];
@@ -173,7 +177,9 @@ class Segmenter
 
     void closeSegment(int64_t f, bool endsPhrase, SegmentList& segments)
     {
-        // A blip of voice too short to be a word isn't worth a segment.
+        // A blip of voice too short to be a word isn't worth a segment. And we don't really want to pull down the
+        // weighted average of the percieved loudness, or else we could end up treating rather "normal" moments as "too loud", thus
+        // pulling them down in a way that might feel more like pumping. 
         if (segmentStartsPhrase && endsPhrase && f - segmentStart < kMinSegmentFrames)
             return;
 
@@ -197,7 +203,8 @@ class Segmenter
     // NEW //
     // Perceived loudness of frames [a, b). The ear judges a word mostly by its loudest part,
     // not its average, so this is a "soft maximum" of the 100 ms loudness. kPeakEmphasis = 1
-    // is the plain power average; higher values lean smoothly toward the loudest moment.
+    // is the plain power average; higher values lean smoothly toward the loudest moment. 100 ms could be up
+    // to question in the future
     double rate(int64_t a, int64_t b)
     {
         double sum = 0.0;
@@ -210,6 +217,8 @@ class Segmenter
     // Now that the newest segment is known, look at the one before it. If it's short and
     // well below its neighbours, it's the dip between two words, not a word: replace it
     // with a single seam at the bottom of the dip.
+    // This step is very important in making sure that our whole weighted average, spying on
+    // neighbours thing even works as intended.
     void foldValley(SegmentList& segments)
     {
         const int k = segments.size() - 2;

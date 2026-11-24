@@ -12,3 +12,9 @@ compile_commands.json
 # music with samples, not redistribute them. See samples/README.md.
 samples/*
 !samples/README.md
+
+# Notes for working on the code, kept out of the public repo
+NOTES.md
+CLAUDE.md
+.claude/
+AGENTS.md

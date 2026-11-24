@@ -26,6 +26,7 @@ juce_add_plugin(Numinos
 target_sources(Numinos PRIVATE
     PluginProcessor.cpp PluginProcessor.h
     PluginEditor.cpp PluginEditor.h
+    NuminosLook.cpp NuminosLook.h
     SamplePlayer.h)
 
 target_compile_definitions(Numinos PUBLIC
@@ -42,6 +43,17 @@ target_link_libraries(Numinos
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# The site's typefaces (EB Garamond, IM Fell English SC; SIL Open Font License, see
+# plugin/fonts), embedded so the plugin looks the same on every machine.
+juce_add_binary_data(NuminosFonts
+    HEADER_NAME NuminosFonts.h
+    NAMESPACE NuminosFonts
+    SOURCES
+        fonts/EBGaramond-Regular.ttf
+        fonts/EBGaramond-Italic.ttf
+        fonts/IMFellEnglishSC-Regular.ttf)
+target_link_libraries(Numinos PRIVATE NuminosFonts)
 
 # Each Numin's README.md (numins/<Name>/README.md, optional) is embedded so the plugin can
 # show it under "About". BinaryData names come from file names, and every file is called

@@ -33,6 +33,13 @@ juce::String readmeFor(const juce::String& numinName)
 
 NuminosEditor::NuminosEditor(NuminosProcessor& p) : AudioProcessorEditor(p), processor(p)
 {
+    // Paper grain: faint random specks of ink, tiled behind everything (see paint()).
+    grain = juce::Image(juce::Image::ARGB, 128, 128, true);
+    juce::Random random(7); // fixed seed: the same paper every time
+    for (int y = 0; y < grain.getHeight(); ++y)
+        for (int x = 0; x < grain.getWidth(); ++x)
+            grain.setPixelAt(x, y, NuminosLook::Colours::ink.withAlpha(random.nextFloat() * 0.06f));
+
     // ---- Numin menu, grouped by category -----------------------------------
     std::map<juce::String, juce::Array<int>> byCategory;
     const auto& all = numinos::allNumins();
@@ -54,14 +61,19 @@ NuminosEditor::NuminosEditor(NuminosProcessor& p) : AudioProcessorEditor(p), pro
     };
     addAndMakeVisible(numinMenu);
 
-    blurb.setColour(juce::Label::textColourId, juce::Colours::grey);
+    blurb.setColour(juce::Label::textColourId, NuminosLook::Colours::indigo);
+    blurb.setFont(look.italic(19.0f));
+    blurb.setBorderSize({});
     addAndMakeVisible(blurb);
 
     // ---- one row per generic parameter ---------------------------------------
     for (int i = 0; i < numinos::kMaxParams; ++i)
     {
         auto& row = rows[(size_t)i];
-        row.slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 130, rowHeight - 6);
+        row.slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, valueWidth, rowHeight - 6);
+        row.label.setFont(look.caps(16.0f, 0.06f));
+        row.label.setColour(juce::Label::textColourId, NuminosLook::Colours::graphite);
+        row.label.setBorderSize({});
         row.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
             processor.params, "p" + juce::String(i + 1), row.slider);
         row.slider.setDoubleClickReturnValue(true, 0.5); // updated per Numin below
@@ -70,7 +82,6 @@ NuminosEditor::NuminosEditor(NuminosProcessor& p) : AudioProcessorEditor(p), pro
     }
 
     bypassButton.setClickingTogglesState(true);
-    bypassButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::darkred);
     bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processor.params, "bypass", bypassButton);
     addAndMakeVisible(bypassButton);
@@ -82,7 +93,8 @@ NuminosEditor::NuminosEditor(NuminosProcessor& p) : AudioProcessorEditor(p), pro
     aboutText.setReadOnly(true);
     aboutText.setCaretVisible(false);
     aboutText.setScrollbarsShown(true);
-    aboutText.setFont(juce::Font(juce::FontOptions(15.0f)));
+    aboutText.setFont(look.serif(18.0f));
+    aboutText.setScrollBarThickness(6);
     addChildComponent(aboutText);
 
     // ---- standalone lab: loop a sample through the Numin ---------------------
@@ -91,19 +103,22 @@ NuminosEditor::NuminosEditor(NuminosProcessor& p) : AudioProcessorEditor(p), pro
         loadButton.onClick = [this] { chooseSample(); };
         playButton.setClickingTogglesState(true);
         playButton.onClick = [this] { processor.player.setPlaying(playButton.getToggleState()); };
-        sampleLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
+        sampleLabel.setColour(juce::Label::textColourId, NuminosLook::Colours::graphite);
+        sampleLabel.setFont(look.italic(17.0f));
         addAndMakeVisible(loadButton);
         addAndMakeVisible(playButton);
         addAndMakeVisible(sampleLabel);
         refreshSampleLabel();
     }
 
+    setLookAndFeel(&look); // set last, so every child above is restyled (sliders rebuild their value boxes)
     rebuildForNumin();
     startTimerHz(4);
 }
 
 NuminosEditor::~NuminosEditor()
 {
+    setLookAndFeel(nullptr);
     if (processor.isStandalone())
         processor.saveLabSessionIfChanged();
 }
@@ -141,9 +156,9 @@ void NuminosEditor::rebuildForNumin()
         }
     }
 
-    const int sampleRows = processor.isStandalone() ? 1 : 0;
+    const int lab = processor.isStandalone() ? rowHeight + gap : 0;
     const int body = showingAbout ? aboutHeight : rowHeight * view.paramNames.size();
-    setSize(560, margin * 2 + rowHeight * (2 + sampleRows) + body + margin * (1 + sampleRows));
+    setSize(width, margin + headerHeight + gap + titleHeight + blurbHeight + gap * 2 + lab + body + margin);
     resized();
 }
 
@@ -157,28 +172,32 @@ void NuminosEditor::resized()
 {
     auto area = getLocalBounds().reduced(margin);
 
-    auto top = area.removeFromTop(rowHeight);
-    bypassButton.setBounds(top.removeFromRight(120));
-    top.removeFromRight(margin);
+    // header: the wordmark is painted on the left (paint()); buttons sit on the right
+    auto header = area.removeFromTop(headerHeight);
+    bypassButton.setBounds(header.removeFromRight(118));
     if (aboutButton.isVisible())
     {
-        aboutButton.setBounds(top.removeFromRight(70));
-        top.removeFromRight(margin);
+        header.removeFromRight(8);
+        aboutButton.setBounds(header.removeFromRight(76));
     }
-    numinMenu.setBounds(top);
-    blurb.setBounds(area.removeFromTop(rowHeight));
+    area.removeFromTop(gap);
+
+    numinMenu.setBounds(area.removeFromTop(titleHeight));
+    blurb.setBounds(area.removeFromTop(blurbHeight));
+    area.removeFromTop(gap);
+    ruleY = area.getY();
+    area.removeFromTop(gap);
 
     if (processor.isStandalone())
     {
-        area.removeFromTop(margin / 2);
-        auto lab = area.removeFromTop(rowHeight);
-        loadButton.setBounds(lab.removeFromLeft(130));
-        lab.removeFromLeft(6);
-        playButton.setBounds(lab.removeFromLeft(70));
-        lab.removeFromLeft(6);
-        sampleLabel.setBounds(lab);
+        auto labRow = area.removeFromTop(rowHeight).reduced(0, 3);
+        loadButton.setBounds(labRow.removeFromLeft(140));
+        labRow.removeFromLeft(8);
+        playButton.setBounds(labRow.removeFromLeft(70));
+        labRow.removeFromLeft(12);
+        sampleLabel.setBounds(labRow);
+        area.removeFromTop(gap);
     }
-    area.removeFromTop(margin);
 
     if (showingAbout)
     {
@@ -191,14 +210,39 @@ void NuminosEditor::resized()
         if (!row.slider.isVisible())
             continue;
         auto r = area.removeFromTop(rowHeight);
-        row.label.setBounds(r.removeFromLeft(110));
+        row.label.setBounds(r.removeFromLeft(labelWidth));
         row.slider.setBounds(r);
     }
 }
 
 void NuminosEditor::paint(juce::Graphics& g)
 {
-    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+    using C = NuminosLook::Colours;
+    const auto bounds = getLocalBounds().toFloat();
+
+    // paper, grain, and the warm darkening toward the edges (the site's body::after)
+    g.fillAll(C::paper);
+    g.setTiledImageFill(grain, 0, 0, 1.0f);
+    g.fillAll();
+    juce::ColourGradient edge(juce::Colours::transparentBlack, bounds.getCentre(),
+                              juce::Colour(0xff464a52).withAlpha(0.12f), bounds.getTopLeft(), true);
+    edge.addColour(0.6, juce::Colours::transparentBlack);
+    g.setGradientFill(edge);
+    g.fillAll();
+
+    // wordmark: the honey drop, then NUMINOS in letter-spaced small caps (the site's imprint)
+    auto header = getLocalBounds().reduced(margin).removeFromTop(headerHeight).toFloat();
+    auto dropArea = header.removeFromLeft(10.0f).withSizeKeepingCentre(10.0f, 15.0f);
+    g.setColour(C::amber);
+    g.fillPath(NuminosLook::dropShape(dropArea));
+    header.removeFromLeft(9.0f);
+    g.setColour(C::graphite);
+    g.setFont(look.caps(14.0f, 0.18f));
+    g.drawText("Numinos", header, juce::Justification::centredLeft);
+
+    // the rule under the Numin's name
+    g.setColour(C::hairline);
+    g.fillRect(juce::Rectangle<float>((float)margin, (float)ruleY, bounds.getWidth() - 2.0f * margin, 1.0f));
 }
 
 void NuminosEditor::timerCallback()

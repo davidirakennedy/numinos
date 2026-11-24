@@ -39,7 +39,7 @@ class Honey : public Numin
 
     const char* name() const override { return "Honey"; }
     const char* category() const override { return "Dynamics"; }
-    const char* blurb() const override { return "Nothing jumps out; the performance stays."; }
+    const char* blurb() const override { return "Transparently control percieved variation in percieved loudness over time."; }
 
     int numParams() const override { return NumParams; }
     ParamInfo paramInfo(int i) const override

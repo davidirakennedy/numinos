@@ -4,6 +4,7 @@
 // standalone lab) controls to loop an audio file through it.
 #pragma once
 
+#include "NuminosLook.h"
 #include "PluginProcessor.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -37,6 +38,7 @@ class NuminosEditor : public juce::AudioProcessorEditor,
     };
 
     NuminosProcessor& processor;
+    NuminosLook look; // declared before the components, so it outlives them
     juce::String shownNumin;
 
     juce::ComboBox numinMenu;
@@ -53,7 +55,14 @@ class NuminosEditor : public juce::AudioProcessorEditor,
     juce::Label sampleLabel;
     std::unique_ptr<juce::FileChooser> chooser;
 
-    static constexpr int rowHeight = 30, margin = 12, aboutHeight = 420;
+    juce::Image grain;      // paper texture, made once in the constructor
+    int ruleY = 0;          // where paint() draws the line under the Numin's name (set in resized())
+
+    // layout, top to bottom: header (wordmark + buttons), the Numin's name, its blurb,
+    // a rule, the lab row (standalone only), then the sliders or the About text
+    static constexpr int width = 560, margin = 22, headerHeight = 26, titleHeight = 40,
+                         blurbHeight = 24, gap = 14, rowHeight = 36, labelWidth = 120,
+                         valueWidth = 120, aboutHeight = 420;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NuminosEditor)
 };

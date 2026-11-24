@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Fast: just the DSP and its safety checks. No JUCE, ~30 seconds.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DNUMINOS_BUILD_PLUGIN=OFF -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build -j
+      - run: build/tools/numin-check
+
+  # The real plugin on macOS (AU + VST3), uploaded as a downloadable artifact.
+  plugin-macos:
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-${{ hashFiles('CMakeLists.txt') }}
+      - run: brew install ninja
+      - run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+      - run: cmake --build build --target Numinos_All numin-check
+      - run: build/tools/numin-check
+      - name: auval
+        # Validator access on CI runners can be flaky; this reports but never blocks.
+        continue-on-error: true
+        run: |
+          killall -9 AudioComponentRegistrar || true
+          auval -v aufx Nmn1 Nmns
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Numinos-macOS
+          path: |
+            build/plugin/Numinos_artefacts/Release/AU/Numinos.component
+            build/plugin/Numinos_artefacts/Release/VST3/Numinos.vst3

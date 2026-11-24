@@ -1,0 +1,14 @@
+build/
+.deps/
+dist/
+renders/
+compile_commands.json
+.cache/
+.DS_Store
+.vscode/
+.idea/
+
+# Audio stays local: sample-library licenses (Splice, LANDR, ...) let you make
+# music with samples, not redistribute them. See samples/README.md.
+samples/*
+!samples/README.md

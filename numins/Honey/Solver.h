@@ -29,7 +29,7 @@ class Solver
     //   sum (gain - baseline)^2                          stay faithful to the performance
     //   + viscosity * sum upwardSurprise^2               words that jump out
     //   + viscosity * liftShare * sum downwardSurprise^2  words that get buried
-    //   + viscosity * smoothness * sum (gain - previous gain)^2   neighbours in a phrase move together
+    //   + viscosity * smoothness * sum glue(gain - previous gain)  neighbours in a phrase move together
     // where surprise is measured against a reference: what the neighbours predict, moved toward
     // the level of the whole line as `gather` rises (Honey's push range). Gathering makes Honey
     // pull the vocal together, not just smooth out what stands out.
@@ -38,6 +38,14 @@ class Solver
     // syllable between two loud ones is lifted while they're cut, and the gain swings several dB
     // up and back down inside a single phrase: that's pumping, even with perfect S-curves. With it,
     // Honey prefers to move whole stretches of a phrase together, so it levels lines, not syllables.
+    //
+    // glue(d) is a square for small differences, leaning toward a straight line for large ones
+    // (a "pseudo-Huber" curve; smoothKneeDb is where it turns). Small gain differences between
+    // neighbours are the see-saw that reads as pumping, so they're resisted as strongly as ever.
+    // But a big difference is what fixing a real surprise takes, and its cost grows only in
+    // proportion, so the glue can no longer talk the solver out of cutting a word that jumps out.
+    // Turning Viscosity up then really removes more of the surprise. The curve has no corner:
+    // the pull between neighbours rises smoothly and levels off at about smoothKneeDb's worth.
     struct Settings
     {
         double viscosityWeight; // lambda: how strongly surprises are removed
@@ -46,6 +54,7 @@ class Solver
         double liftShare;       // how strongly buried words are lifted, relative to cutting
         double gather;          // 0..1: reference moves from the neighbours' prediction toward the line's level
         double smoothness;      // how strongly neighbouring segments of a phrase are kept at similar gains
+        double smoothKneeDb;    // gain differences beyond about this are no longer resisted harder and harder
     };
 
     static void solve(SegmentList& segments, const Settings& settings)
@@ -121,7 +130,10 @@ class Solver
         }
 
 
-        // Projected gradient descent: step downhill, then clamp every gain to <= 0 dB.
+        // Projected gradient descent: step downhill, then clamp every gain between the deepest
+        // cut and the ceiling. The ceiling sits just above the baseline (it's negative, so 0.85 of
+        // it is slightly higher): a buried word can rise only a little above "normal", ~0.5 dB at max.
+        const double ceilingDb = 0.85 * baselineDb;
         const double lambda = settings.viscosityWeight;
         const double mu = lambda * settings.smoothness;
         const double step = 0.4 / (1.0 + 4.0 * lambda + 4.0 * mu); // smaller as the problem gets stiffer
@@ -153,9 +165,9 @@ class Solver
             for (int k = 1; k < n; ++k) // neighbours in a phrase pull each other's gains together
                 if (segments[first + k].phrase == segments[first + k - 1].phrase)
                 {
-                    const double difference = cut[k] - cut[k - 1];
-                    grad[k] += 2.0 * mu * difference;
-                    grad[k - 1] -= 2.0 * mu * difference;
+                    const double pull = glueSlope(cut[k] - cut[k - 1], settings.smoothKneeDb);
+                    grad[k] += 2.0 * mu * pull;
+                    grad[k - 1] -= 2.0 * mu * pull;
                 }
             for (int i = 0; i < n; ++i) // each neighbour j of i shares in i's surprise
                 for (int o = -K; o <= K; ++o)
@@ -163,7 +175,7 @@ class Solver
                         grad[i + o] -= 2.0 * lambda * surprise[i] * weight[i][o + K] * (1.0 - gather);
             for (int k = 0; k < n; ++k)
                 if (!segments[first + k].locked)
-                    cut[k] = std::clamp(cut[k] - step * grad[k], baselineDb - kMaxCutDb, 0.0);
+                    cut[k] = std::clamp(cut[k] - step * grad[k], baselineDb - kMaxCutDb, ceilingDb);
         }
 
         for (int k = 0; k < n; ++k)
@@ -173,6 +185,14 @@ class Solver
 
   private:
     static double centreSeconds(const Segment& s) { return 0.5 * (s.start + s.end) * kFrameSeconds; }
+
+    // The slope of glue(d) (halved, to match the square's 2d): d itself while small, levelling
+    // off smoothly toward +/- knee once the difference is well past it.
+    static double glueSlope(double d, double knee)
+    {
+        const double r = d / std::max(knee, 1.0e-6); // a knee of 0 would divide by zero
+        return d / std::sqrt(1.0 + r * r);
+    }
 
     
 

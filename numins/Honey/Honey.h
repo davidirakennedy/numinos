@@ -162,7 +162,7 @@ class Honey : public Numin
             if (segmenter.process(0.5 * (kl * kl + kr * kr), segments))
                 honey::Solver::solve(segments, {viscosityWeight(params[Viscosity]), contextSeconds(params[Viscosity]),
                                                 baseline, liftShare(params[Viscosity]), gather(params[Viscosity]),
-                                                smoothness(params[Viscosity])});
+                                                smoothness(params[Viscosity]), smoothKneeDb(params[Viscosity])});
 
             // Get there: the audio from `lookahead` samples ago. The gain chases the target from
             // `anticipation` samples in the future, so each glide is centred on its seam.
@@ -290,6 +290,11 @@ class Honey : public Numin
     // line together instead of pushing syllables up and down against each other.
     static double smoothness(float v) { return kSmoothness * (0.5 + 0.5 * musical(v)); }
     static constexpr double kSmoothness = 1.0;
+
+    // Where the glue between neighbours stops resisting harder (see Solver.h, glue): differences
+    // between neighbours' gains smaller than this are held together, bigger ones are allowed, so a
+    // word that really jumps out can be cut without the rest of the line rocking with it.
+    static double smoothKneeDb(float v) { return 2.0 * std::pow(0.5, musical(v)) * std::pow(0.5, push(v)); } // 2 .. 1 dB (mark) .. 0.5 dB
 
     // Where the noise sits. At 0 it's "Auto": Honey finds the noise floor itself. Above 0 you set
     // it: put it where the noise is (the bottom of the valleys on the meter). Honey treats the

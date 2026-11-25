@@ -82,6 +82,8 @@ class Numin
     // now, in dB (0 = unity), drawn as a needle beside the strip. The plugin reads them on the
     // audio thread straight after each process() call, so no extra thread safety is needed here.
     // Most Numins have none.
+    // Put the input Trace first: while the plugin is bypassed it draws every other Trace as
+    // equal to the first and every Gain as 0 dB, so the meters show the dry sound you hear.
     static constexpr int kMaxMeters = 5;
     enum class MeterKind { Trace, Line, Shade, Gain };
     struct MeterInfo

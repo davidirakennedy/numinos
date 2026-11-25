@@ -67,6 +67,7 @@ class NuminosProcessor : public juce::AudioProcessor
 
   private:
     juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
+    void publishMeters(bool bypassed); // audio thread: copy the Numin's meters for the UI
     std::unique_ptr<juce::XmlElement> stateXml();
     void restoreFromXml(const juce::XmlElement& xml);
     static juce::File labSessionFile();

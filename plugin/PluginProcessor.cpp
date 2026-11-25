@@ -205,11 +205,36 @@ void NuminosProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
         }
     }
 
-    for (int i = 0; i < juce::jmin(numin->numMeters(), numinos::Numin::kMaxMeters); ++i)
-        meterValues[(size_t)i].store(numin->meterValue(i));
+    const bool bypassed = *bypassValue > 0.5f;
+    publishMeters(bypassed);
 
-    if (*bypassValue > 0.5f)
+    if (bypassed)
         readDelayedDry(buffer, frames); // dry, but exactly as late as the processed sound
+}
+
+void NuminosProcessor::publishMeters(bool bypassed)
+{
+    using Kind = numinos::Numin::MeterKind;
+    const int count = juce::jmin(numin->numMeters(), numinos::Numin::kMaxMeters);
+    int firstTrace = -1; // the input (see Numin.h)
+
+    for (int i = 0; i < count; ++i)
+    {
+        float value = numin->meterValue(i);
+        if (bypassed)
+        {
+            // Show what you hear: the dry sound. The Numin is still analysing (so the noise
+            // floor and other Lines and Shades stay live), but none of its processing is applied.
+            const Kind kind = numin->meterInfo(i).kind;
+            if (kind == Kind::Gain)
+                value = 0.0f; // unity: the needle settles back to rest
+            else if (kind == Kind::Trace && firstTrace < 0)
+                firstTrace = i;
+            else if (kind == Kind::Trace)
+                value = numin->meterValue(firstTrace); // output = input
+        }
+        meterValues[(size_t)i].store(value);
+    }
 }
 
 void NuminosProcessor::writeDry(const juce::AudioBuffer<float>& buffer, int frames)

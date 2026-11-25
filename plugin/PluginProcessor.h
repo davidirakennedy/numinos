@@ -24,10 +24,14 @@ class NuminosProcessor : public juce::AudioProcessor
     {
         juce::String name, category, blurb;
         juce::StringArray paramNames;
+        juce::StringArray meterNames;                   // the Numin's meters (see Numin.h), if any
+        juce::Array<numinos::Numin::MeterKind> meterKinds; // Trace, Line or Shade, per meter
+        float meterLowDb = -80.0f, meterHighDb = 0.0f;
     };
     NuminView describeNumin() const;
     juce::String paramText(int index, float value) const;
     juce::String paramName(int index) const;
+    float meterValue(int index) const { return meterValues[(size_t)index].load(); } // any thread
 
     juce::AudioProcessorValueTreeState params;
     bool isStandalone() const { return wrapperType == wrapperType_Standalone; }
@@ -83,6 +87,10 @@ class NuminosProcessor : public juce::AudioProcessor
     juce::AudioBuffer<float> dryDelay;
     int dryWritePos = 0;
     std::atomic<int> latency{0};
+
+    // The current Numin's meter values, copied on the audio thread after each block so the UI can
+    // read them without ever taking numinLock (which would make the audio thread pass through dry).
+    std::array<std::atomic<float>, numinos::Numin::kMaxMeters> meterValues{};
 
     juce::String lastSavedLabSession;
 

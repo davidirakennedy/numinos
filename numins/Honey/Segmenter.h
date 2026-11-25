@@ -59,6 +59,22 @@ class Segmenter
 
     int samplesPerFrame() const { return frameLength; }
 
+    // Set the noise floor yourself, instead of tracking it automatically: where the noise sits
+    // (K-weighted dBFS), e.g. the bottom of the valleys between phrases on the meter. Exactly like
+    // the automatic floor, voice is anything clearly above it (kVoiceMarginDb), because noise
+    // wobbles above its quietest moments. Pass NAN to go back to automatic; the automatic tracker
+    // keeps running underneath, so switching back picks up where it left off.
+    void setNoiseFloorDb(double floorDb) { manualFloorDb = floorDb; }
+
+    // How deep a dip must be to become a seam (Honey makes it finer in its push range).
+    void setValleyDepthDb(double depthDb) { valleyDepthDb = depthDb; }
+
+    // For the meter: the 30 ms loudness at a given frame (K-weighted dB), the noise floor in use
+    // (automatic or fixed), and the level below which Honey treats the signal as silence.
+    double loudnessAtFrameDb(int64_t f) const { return f < 0 ? -120.0 : fastDb[f]; }
+    double noiseFloorInUseDb() const { return floorDb(); }
+    double silenceThresholdDb() const { return floorDb() + kVoiceMarginDb; }
+
     // Feed one sample's K-weighted power. Returns true if a segment closed, i.e. the
     // list gained a segment and the cuts should be solved again.
     bool process(double power, SegmentList& segments)
@@ -92,13 +108,16 @@ class Segmenter
         loudDb[frame - kLoudFrames / 2] = 10.0 * std::log10(loudAverage.process(power, kLoudFrames) + 1.0e-12);
 
         updateNoiseFloor(power);
-        voiced[fastFrame] = fastDb[fastFrame] > noiseFloorDb + kVoiceMarginDb ? 1.0 : 0.0;
+        voiced[fastFrame] = fastDb[fastFrame] > floorDb() + kVoiceMarginDb ? 1.0 : 0.0;
 
         // We can only judge a frame once we've seen kValleySearchFrames beyond it.
         const int64_t decide = fastFrame - kValleySearchFrames;
         if (decide > kValleySearchFrames)
             decideFrame(decide, segments);
     }
+
+    // The noise floor everything is measured against: fixed by the user, or tracked automatically.
+    double floorDb() const { return std::isnan(manualFloorDb) ? noiseFloorDb : manualFloorDb; }
 
     // The quietest 50 ms block in the last 10 s, never below -70 dB. Digital silence is skipped.
     // This made need some work because if a vocal is trimmed in the beginning such that there is no
@@ -165,7 +184,7 @@ class Segmenter
             leftPeak = std::max(leftPeak, fastDb[f - k]);
             rightPeak = std::max(rightPeak, fastDb[f + k]);
         }
-        return std::min(leftPeak, rightPeak) - here >= kValleyDepthDb;
+        return std::min(leftPeak, rightPeak) - here >= valleyDepthDb;
     }
 
     void openSegment(int64_t f, bool startsPhrase)
@@ -188,6 +207,7 @@ class Segmenter
         s.end = f;
         s.phrase = phrase;
         s.loudnessDb = rate(s.start, s.end);
+        s.aboveFloorDb = s.loudnessDb - floorDb();
         segments.push(s);
 
         foldValley(segments);
@@ -238,7 +258,7 @@ class Segmenter
             louder = std::max(louder, segments[k - 1].loudnessDb);
         if (hasRight)
             louder = std::max(louder, segments[k + 1].loudnessDb);
-        if (dip.loudnessDb > louder - kValleyDepthDb)
+        if (dip.loudnessDb > louder - valleyDepthDb)
             return;
 
         int64_t bottom = dip.start;
@@ -257,9 +277,15 @@ class Segmenter
             segments[k + 1].start = dip.start;
 
         if (hasLeft)
+        {
             segments[k - 1].loudnessDb = rate(segments[k - 1].start, segments[k - 1].end);
+            segments[k - 1].aboveFloorDb = segments[k - 1].loudnessDb - floorDb();
+        }
         if (hasRight)
+        {
             segments[k + 1].loudnessDb = rate(segments[k + 1].start, segments[k + 1].end);
+            segments[k + 1].aboveFloorDb = segments[k + 1].loudnessDb - floorDb();
+        }
         segments.erase(k);
     }
 
@@ -276,7 +302,9 @@ class Segmenter
 
     // How deep does a dip have to be in order to become a 'seam'? If this value is too low, individual moments or syllables within
     // words could be treated as different events (each then independently liable to be cut)
-    static constexpr double kValleyDepthDb = 4.0;
+    // initially set to 4, but I'm experimenting with lower values to allow for more aggressive attenuation at the
+    // upper range of the viscosity param
+    static constexpr double kValleyDepthDb = 3.0;
 
     // This defines the shortest that a segment can be, 80 ms right now
     static constexpr int kMinSegmentFrames = 16;
@@ -303,6 +331,8 @@ class Segmenter
 
     std::array<double, kFloorBlocks> recentBlocksDb{};
     double noiseFloorDb = kNoFloorYetDb, blockPowerSum = 0.0;
+    double manualFloorDb = NAN; // NAN = automatic
+    double valleyDepthDb = kValleyDepthDb;
     int blockIndex = 0, blockFrameCount = 0;
 
     bool inSegment = false, segmentStartsPhrase = false;

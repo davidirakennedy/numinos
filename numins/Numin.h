@@ -28,6 +28,7 @@ struct ParamInfo
 {
     const char* name;
     float defaultValue; // normalized 0..1
+    float mark = -1.0f; // optional: a tick on the slider at this value, e.g. where a musical range ends
 };
 
 class Numin
@@ -73,6 +74,38 @@ class Numin
 
     // Clear all internal state (filters, delay lines, smoothers).
     virtual void reset() {}
+
+    // ---- meters (optional) -----------------------------------------------
+    // A Numin can publish a few live values for the plugin to draw: a Trace scrolls across a
+    // strip over time (several traces share one dB scale), a Line is drawn across it (a level, say)
+    // and a Shade shades everything below a level. A Gain is the gain the Numin is applying right
+    // now, in dB (0 = unity), drawn as a needle beside the strip. The plugin reads them on the
+    // audio thread straight after each process() call, so no extra thread safety is needed here.
+    // Most Numins have none.
+    static constexpr int kMaxMeters = 5;
+    enum class MeterKind { Trace, Line, Shade, Gain };
+    struct MeterInfo
+    {
+        const char* name;
+        MeterKind kind;
+    };
+    virtual int numMeters() const { return 0; }
+    virtual MeterInfo meterInfo(int index) const
+    {
+        (void)index;
+        return {"", MeterKind::Trace};
+    }
+    virtual float meterValue(int index) const
+    {
+        (void)index;
+        return 0.0f;
+    }
+    // The dB range the strip shows, bottom to top.
+    virtual void meterRangeDb(float& low, float& high) const
+    {
+        low = -80.0f;
+        high = 0.0f;
+    }
 
     // How many samples late this Numin's output is (lookahead). Valid after prepare().
     // The plugin reports it so the DAW can line the track back up with the rest of the mix.

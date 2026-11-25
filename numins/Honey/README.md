@@ -1,22 +1,34 @@
 # Honey
 
-A note from the dev.
+# A note from the dev.
 
-Let's be honest: if your vocal mix isn't sounding good, your MIX isn't sounding good. How is a good (vocal) mix often described? Velvety, thick, gluey, liquid, syrupy...at least in my corner of the audio world. A lot of these terms have something in common: viscosity. that's where "Honey" gets its name. Now into the design:
+Let's be honest: if your *vocal* mix isn't sounding good, your MIX isn't sounding good. Nailing that is as important as anything. This almost certainly means figuring out how to control a vocal's dynamics, so it can sit well in the mix. Honey is really born out two realities along this front: 
 
-Most of the time, when you say you want to control a vocal's dynamics you really mean you want to control its *percieved* dynamics. Which is closely related to the signal's level, but a different thing in its own right. But most of tools we have available as audio engineers (i.e compressors) are better equipped to deal with a signal's digital level, which will of course impact it's percieved loudness, but more as a convenient side-effect.
+— a signal's level and its perceived loudness are two related, but meaningfully different things.
+— perceived loudness and *relative* perceived loudness are two different, but meaningfully related things.
 
-Quite interestingly, it's possible to get a vocal that sounds "over-compressed" and still not somehow "controlled" in the way we're after. This is partly due to the fact that compressors are reactionary by design. This means that they will more reliably re-shape the envelope of a sound, because they rely first on that sound crossing a pre-defined threshold. Now of course, these are settings that we can dial in, but at their core compressors don't just change the percieved loudness of a source, they also change *how* that source sounds. People often reach for this purposefully. The grit of an 1176 for instance. Or the slow attack of an LA-2A that lets initial transients through. Or both, in series. 
+When we say we want to control a vocal's dynamics, most of the time we're talking about that second thing: relative perceived loudness. But most of the tools we have available to us as audio engineers along this front (namely gain automation and compressors)are geared towards treating a signal's *level*. Which again, is going to impact a signal's perceived loudness at various points, but more as a well intended side-effect. 
 
-If you want to control a vocal's dynamics without piling on these side-effects, you're essentially left with gain-automation as your last hope. And at this point, you're limited by your own expertise in drawing appropriate automation curves, which can be harder than it sounds. I built honey to save myself from my own incompetence here.
+Compressors introduce two problems:
 
-## How it works
+— compressors are *reactive* by design, meaning they wait for a signal to cross a threshold before engaging. this means that a compressor will more reliably reshape a signal's *envelope*, which changes *how* it sounds as much as how loud it sounds. Now, people often reach for this purposefully. The grit of an 1176. The slow attack of an LA-2A that lets initial transients through. Or both, in series. But nonetheless, it *is* a side effect.
+— a compressor doesn't care how smooth or jarring a change in a signal's level is, it cares about *absolute* level (whether or not it crosses a given threshold). A slow crescendo that crosses the threshold is still going to get damped just as much, even though to our ears that increase in volume doesn't read as problematic. 
 
-A compressor operates on a signal's actual level, in more of an absolute sense. Honey doesn't care about absolute level or thresholds. Instead, it tries to keep the vocal from ever *surprising* you dynamically. Interestingly, if you sing a line softly at first, and slowly get louder as you do, this sounds rather natural and gradual to our ears: no surprises. But a compressor deosn't really care about how jarring or smooth an increase in level is. It only knows that when you cross a certain threshold, it's time to compress. If you crank the input gain of a compressor, eventually *everything* gets compressed. 
+And quite interestingly, it's very possible to get a vocal that sounds "over-compressed" and still not somehow "controlled" in the way that we're after. This happens when a compressor (or series of them) end up changing the envelope of your signal more noticeably than they seem to be controlling the jarring changes in perceived loudness of your vocal.
 
-Honey sort of solves this problem. It doesn't react so much to absolute levels or thresholds, but instead keeps track of how tightly the percieved loudness of neighboring slices can predict the percieved loudness of the next slice. (Don't worry: no ai, no machine learning, just good ol' fashioned maths.) When a slice of sound deviates from its predicted loudness, Honey attenuates it very smoothly. Why is it so smooth? Honey basically implements a lookahead and "pre-fires" (my fellow Siege players may appreciate the term) the attenuation so that most of it is in place before the peak arrives. This means no aggressive re-shaping of the envelope a-la compressors above.
+And if you want to control a vocal's dynamics without piling on these side-effects, you're essentially left with gain-automation as your last hope. And at this point, you're limited by your own expertise in drawing appropriate automation curves, which can be harder than it sounds. I built Honey to save myself from my own incompetence here.
 
-For the nerds who reaaaally want to get into the code, this system is actually inspired by the Brennan Monorail, which used a sophisticated system of gyroscopes to 'detect' and respond to *very* subtle changes in the balance of the train car...correcting them before passengers would even register them happening. Honey basically tries to keep gain automation as transparent as possible. This same S-style curve is what allows it to ease up on the end of phrases without introducing that 'pumping' effect where a tail is brought up too fast (or a compressor stops compressing too quickly)
+# Enter Honey
+
+How is a good (vocal) mix often described? Velvety, thick, gluey, liquid, syrupy...at least in my corner of the audio world. A lot of these terms have something in common: viscosity. that's where "Honey" gets its name. Let's get into it, shall we?
+
+Honey doesn't react so much to absolute levels or thresholds like a compressor would. Instead, it tries to keep the vocal from ever *surprising* you dynamically. It does this by keeping track of how tightly the percieved loudness of a given slice of sound is predicted by the percieved loudness of its neighbouring slices. (Don't worry: no ai, no machine learning, just good ol' fashioned maths.) When a slice of sound deviates from its predicted loudness, Honey attenuates it very smoothly. 
+
+Very smoothly. At least, that's the goal.
+
+How is that done? Honey basically implements a lookahead and "pre-fires" (my fellow Siege players may appreciate the term) the attenuation so that most of it is in place before the peak arrives. This means no aggressive re-shaping of the envelope a-la compressors above. It tries to begin applying attenuation during the *valleys* of the signal, i.e when you're leasy likely to notice. It actually borrows a little trick from a 1900's invention called the Brennan Monorail. 
+
+This was effectively a train which was able to ride on 1 track (instead of two, and even around turns). Without getting lost down that rabbit hole, it effectively used a sophisticated system of gyroscopes to 'detect' and respond to *very* subtle changes in the balance of the train car...correcting them before passengers would even register them happening. Honey basically tries to keep gain automation as transparent as possible by adopting this approach. This S-style curve is what allows it to ease in and out of what might otherwise be considered compression in a way that doesn't feel like it.
 
 ## Using it
 

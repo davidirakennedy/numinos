@@ -92,6 +92,18 @@ void NuminosLook::drawLinearSlider(juce::Graphics& g, int x, int y, int width, i
     g.setColour(C::ink.withAlpha(slider.isEnabled() ? 0.7f : 0.3f)); // the amount so far, in ink
     g.fillRect(juce::Rectangle<float>(left, midY - 0.75f, sliderPos - left, 1.5f));
 
+    // An optional mark on the line (a Numin's ParamInfo::mark), e.g. where its musical range ends:
+    // a short graphite tick across the line, and the line beyond it drawn a little warmer.
+    const float mark = (float)(double)slider.getProperties().getWithDefault("mark", -1.0);
+    if (mark >= 0.0f)
+    {
+        const float markX = (float)slider.getPositionOfValue(mark);
+        g.setColour(C::amber.withAlpha(0.35f));
+        g.fillRect(juce::Rectangle<float>(markX, midY - 0.5f, right - markX, 1.0f));
+        g.setColour(C::graphite);
+        g.fillRect(juce::Rectangle<float>(markX - 0.5f, midY - 5.0f, 1.0f, 10.0f));
+    }
+
     // The drop: its belly centred on the line at the value, point up.
     const float dropH = 17.0f, dropW = dropH * (12.0f / 18.0f); // the favicon drop is 12 x 18
     auto area = juce::Rectangle<float>(dropW, dropH).withCentre({sliderPos, midY - dropH * 0.5f + dropW * 0.5f});

@@ -1,9 +1,13 @@
 // PluginEditor — a generic UI that builds itself from the current Numin:
 // a menu to pick the Numin, one slider per parameter, an A/B bypass button,
-// an "About" page showing the Numin's README (if it has one), and (in the
+// an "About" page showing the Numin's README (if it has one), a live meter
+// strip (if the Numin publishes meters) with a gain needle beside it (if it
+// publishes a Gain), and (in the
 // standalone lab) controls to loop an audio file through it.
 #pragma once
 
+#include "GainNeedle.h"
+#include "MeterStrip.h"
 #include "NuminosLook.h"
 #include "PluginProcessor.h"
 
@@ -47,6 +51,8 @@ class NuminosEditor : public juce::AudioProcessorEditor,
     juce::TextButton bypassButton{"A/B: Bypass"};
     juce::TextButton aboutButton{"About"};
     juce::TextEditor aboutText; // the current Numin's README, read-only
+    MeterStrip meter;           // the Numin's live meters, if it has any
+    GainNeedle needle;          // and its gain, as a needle beside them
     bool showingAbout = false;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
 
@@ -59,10 +65,10 @@ class NuminosEditor : public juce::AudioProcessorEditor,
     int ruleY = 0;          // where paint() draws the line under the Numin's name (set in resized())
 
     // layout, top to bottom: header (wordmark + buttons), the Numin's name, its blurb,
-    // a rule, the lab row (standalone only), then the sliders or the About text
+    // a rule, the lab row (standalone only), the meter strip (if any), then the sliders or the About text
     static constexpr int width = 560, margin = 22, headerHeight = 26, titleHeight = 40,
                          blurbHeight = 24, gap = 14, rowHeight = 36, labelWidth = 120,
-                         valueWidth = 120, aboutHeight = 420;
+                         valueWidth = 120, aboutHeight = 420, meterHeight = 110, needleWidth = 150;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NuminosEditor)
 };

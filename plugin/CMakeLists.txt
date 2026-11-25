@@ -27,6 +27,8 @@ target_sources(Numinos PRIVATE
     PluginProcessor.cpp PluginProcessor.h
     PluginEditor.cpp PluginEditor.h
     NuminosLook.cpp NuminosLook.h
+    MeterStrip.h
+    GainNeedle.h
     SamplePlayer.h)
 
 target_compile_definitions(Numinos PUBLIC

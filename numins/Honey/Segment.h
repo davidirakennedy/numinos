@@ -21,7 +21,8 @@ struct Segment
     int64_t start = 0, end = 0; // frames, [start, end)
     int phrase = 0;             // which phrase (run of voice between gaps) it belongs to
     double loudnessDb = 0.0;    // its perceived loudness
-    double gainDb = 0.0;        // the cut the solver chose (always <= 0)
+    double aboveFloorDb = 0.0;  // how far its loudness sits above the noise floor
+    double gainDb = 0.0;        // the gain the solver chose (always <= 0; the baseline when untouched)
     bool locked = false;        // once it starts playing, its gain never changes
 };
 

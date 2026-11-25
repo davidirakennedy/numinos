@@ -31,7 +31,10 @@ juce::String readmeFor(const juce::String& numinName)
 }
 } // namespace
 
-NuminosEditor::NuminosEditor(NuminosProcessor& p) : AudioProcessorEditor(p), processor(p)
+NuminosEditor::NuminosEditor(NuminosProcessor& p)
+    : AudioProcessorEditor(p), processor(p),
+      meter(look, [this](int i) { return processor.meterValue(i); }),
+      needle(look, [this](int i) { return processor.meterValue(i); })
 {
     // Paper grain: faint random specks of ink, tiled behind everything (see paint()).
     grain = juce::Image(juce::Image::ARGB, 128, 128, true);
@@ -96,6 +99,8 @@ NuminosEditor::NuminosEditor(NuminosProcessor& p) : AudioProcessorEditor(p), pro
     aboutText.setFont(look.serif(18.0f));
     aboutText.setScrollBarThickness(6);
     addChildComponent(aboutText);
+    addChildComponent(meter);
+    addChildComponent(needle);
 
     // ---- standalone lab: loop a sample through the Numin ---------------------
     if (processor.isStandalone())
@@ -140,6 +145,10 @@ void NuminosEditor::rebuildForNumin()
         showingAbout = false;
     aboutButton.setToggleState(showingAbout, juce::dontSendNotification);
     aboutText.setVisible(showingAbout);
+    meter.configure(view);
+    meter.setVisible(meter.hasMeters() && !showingAbout);
+    needle.configure(view);
+    needle.setVisible(needle.hasGain() && !showingAbout);
 
     auto numin = numinos::createNumin(view.name.toStdString()); // for default values
     for (int i = 0; i < numinos::kMaxParams; ++i)
@@ -152,12 +161,14 @@ void NuminosEditor::rebuildForNumin()
         {
             row.label.setText(view.paramNames[i], juce::dontSendNotification);
             row.slider.setDoubleClickReturnValue(true, numin->paramInfo(i).defaultValue);
+            row.slider.getProperties().set("mark", numin->paramInfo(i).mark); // drawn by NuminosLook, if >= 0
             row.slider.updateText(); // display text depends on the Numin
         }
     }
 
     const int lab = processor.isStandalone() ? rowHeight + gap : 0;
-    const int body = showingAbout ? aboutHeight : rowHeight * view.paramNames.size();
+    const int metering = meter.isVisible() || needle.isVisible() ? meterHeight + gap : 0;
+    const int body = showingAbout ? aboutHeight : metering + rowHeight * view.paramNames.size();
     setSize(width, margin + headerHeight + gap + titleHeight + blurbHeight + gap * 2 + lab + body + margin);
     resized();
 }
@@ -203,6 +214,18 @@ void NuminosEditor::resized()
     {
         aboutText.setBounds(area);
         return;
+    }
+
+    if (meter.isVisible() || needle.isVisible())
+    {
+        auto meters = area.removeFromTop(meterHeight);
+        if (needle.isVisible())
+        {
+            needle.setBounds(meters.removeFromRight(meter.isVisible() ? needleWidth : meters.getWidth()));
+            meters.removeFromRight(gap);
+        }
+        meter.setBounds(meters);
+        area.removeFromTop(gap);
     }
 
     for (auto& row : rows)

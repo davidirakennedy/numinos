@@ -105,6 +105,12 @@ NuminosProcessor::NuminView NuminosProcessor::describeNumin() const
     v.blurb = numin->blurb();
     for (int i = 0; i < numin->numParams(); ++i)
         v.paramNames.add(numin->paramInfo(i).name);
+    for (int i = 0; i < juce::jmin(numin->numMeters(), numinos::Numin::kMaxMeters); ++i)
+    {
+        v.meterNames.add(numin->meterInfo(i).name);
+        v.meterKinds.add(numin->meterInfo(i).kind);
+    }
+    numin->meterRangeDb(v.meterLowDb, v.meterHighDb);
     return v;
 }
 
@@ -198,6 +204,9 @@ void NuminosProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
             numin->process(left + pos, scratch.data(), left + pos, scratch.data(), n);
         }
     }
+
+    for (int i = 0; i < juce::jmin(numin->numMeters(), numinos::Numin::kMaxMeters); ++i)
+        meterValues[(size_t)i].store(numin->meterValue(i));
 
     if (*bypassValue > 0.5f)
         readDelayedDry(buffer, frames); // dry, but exactly as late as the processed sound

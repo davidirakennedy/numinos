@@ -7,6 +7,15 @@ MAJOR.MINOR.PATCH (still 0.x while things are early).
 
 ## Unreleased
 
+### Changed (experimental)
+- **Honey:** a new ear. Loudness is heard in five bands, weighted by how sensitive hearing is in
+  each and added the way loudness adds, instead of one K-weighted power sum. Sibilance and
+  consonants no longer read loud, and each segment is judged by its vowel.
+- **Honey:** the gain is planned as one smooth curve across the whole lookahead, re-planned every
+  5 ms, instead of a follower chasing a staircase of targets. Moving costs a lot on a vowel and
+  almost nothing in valleys and gaps, so cuts land in the valley before a word, releases in its
+  tail, and across a silence the gain glides from one line's level to the next.
+
 ### Added
 - **Honey:** a gain needle beside the meter strip, showing what Honey is doing right now.
   Centre-zero: cuts swing left, lifts swing right. The needle has a little mass, so its motion

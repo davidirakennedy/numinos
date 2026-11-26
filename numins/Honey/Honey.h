@@ -1,32 +1,36 @@
 // Honey — makes a vocal feel controlled without taking away its emotion.
 //
 // Every moment of the vocal should be well predicted by the moments around it.
-// Honey listens ahead (about 2 s), and:
-//   1. measures perceived loudness (K-weighted) every 5 ms "frame",
+// Honey listens ahead (0.8 s), and:
+//   1. hears how loud every 5 ms "frame" sounds, and how vowel-like it is,
 //   2. cuts the vocal into segments at the loudness valleys between syllables and words,
-//   3. rates each segment and predicts it from its neighbours,
-//   4. cuts any segment that rises above that prediction (Viscosity sets how hard),
-//   5. moves the gain toward each segment's cut like a body with inertia: it starts
-//      early and imperceptibly, glides, and can never move fast enough to be heard.
+//   3. rates each segment by its vowel and predicts it from its neighbours,
+//   4. decides a level for every segment: cut if it jumps out, a little less if it's buried
+//      (Viscosity sets how hard),
+//   5. plans the gain as one smooth curve through those levels, moving where it can't be
+//      heard: in valleys, in fading tails, across gaps. Re-planned every frame.
 //      Mix-only: the latency is large.
 //
 // The stages live in their own files:
-//   Segmenter.h     — seeing: loudness, noise floor, seams, rating        (steps 1–3)
-//   Solver.h        — judging and deciding: prediction and the cuts       (steps 3–4)
-//   GainFollower.h  — getting there: the inertial gain                    (step 5)
+//   Ear.h           — hearing: perceived loudness and vowel-ness per frame (step 1)
+//   Segmenter.h     — seeing: noise floor, seams, rating                   (steps 2–3)
+//   Solver.h        — judging and deciding: prediction and the levels      (steps 3–4)
+//   GainPath.h      — moving: the planned gain curve                       (step 5)
 //   Segment.h       — the Segment they all share
 // This file wires them together and owns the knob, the delay and playback.
 #pragma once
 
 #include "../Numin.h"
 #include "../dsp/DelayLine.h"
-#include "../dsp/KWeighting.h"
 
-#include "GainFollower.h"
+#include "Ear.h"
+#include "GainPath.h"
 #include "Segment.h"
 #include "Segmenter.h"
 #include "Solver.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 
 namespace numinos
@@ -65,8 +69,7 @@ class Honey : public Numin
     {
         lookahead = (int)std::lround(kLookaheadSeconds * newSampleRate);
 
-        weightL.prepare(newSampleRate);
-        weightR.prepare(newSampleRate);
+        ear.prepare(newSampleRate);
         delayL.prepare(lookahead);
         delayR.prepare(lookahead);
         segmenter.prepare(newSampleRate);
@@ -94,7 +97,7 @@ class Honey : public Numin
     }
     float meterValue(int i) const override
     {
-        const double in = segmenter.loudnessAtFrameDb((samplesIn - lookahead) / segmenter.samplesPerFrame());
+        const double in = segmenter.loudnessAtFrameDb((samplesIn - lookahead) / ear.samplesPerFrame());
         switch (i)
         {
         case InputMeter: return (float)in;
@@ -115,12 +118,11 @@ class Honey : public Numin
 
     void reset() override
     {
-        weightL.reset();
-        weightR.reset();
+        ear.reset();
         delayL.reset();
         delayR.reset();
         segmenter.reset();
-        gain.reset(baselineDb(params[Viscosity]));
+        path.reset(baselineDb(params[Viscosity]));
 
         segments.clear();
         playIndex = 0;
@@ -131,11 +133,9 @@ class Honey : public Numin
 
     void process(const float* inL, const float* inR, float* outL, float* outR, int frames) override
     {
-        // Viscosity also sets how quickly the gain can move: lighter, so quicker, as it rises.
-        const double inertia = inertiaSeconds(params[Viscosity]);
-        const double releaseInertia = releaseInertiaSeconds(params[Viscosity]);
-        const int anticipation = (int)std::lround(kAnticipationRatio * inertia * sampleRate);
-        const int cutAnticipation = (int)std::lround(std::min(kCutAnticipationRatio * inertia, kMaxCutAnticipationSeconds) * sampleRate);
+        // Viscosity also sets how readily the gain moves: lighter, so quicker, as it rises.
+        const honey::GainPath::Settings pathSettings = pathSettingsFor(params[Viscosity]);
+        const int frameLength = ear.samplesPerFrame();
 
         // Density: every word (and every gap) sits at this small attenuation unless it stands out.
         // Buried words are attenuated less, so they rise toward 0 dB. It's added back at the
@@ -156,21 +156,24 @@ class Honey : public Numin
             delayL.write(l);
             delayR.write(r);
 
-            // See: K-weighted power into the segmenter. Whenever it finishes a segment,
-            // judge and decide the cuts again with the new context.
-            const double kl = weightL.process(l), kr = weightR.process(r);
-            if (segmenter.process(0.5 * (kl * kl + kr * kr), segments))
+            // Hear and see: every frame the Ear hears goes to the Segmenter. Whenever it finishes a
+            // segment, judge and decide the levels again with the new context.
+            if (ear.process(l, r) && segmenter.addFrame(ear.intensity(), ear.vowel(), segments))
                 honey::Solver::solve(segments, {viscosityWeight(params[Viscosity]), contextSeconds(params[Viscosity]),
                                                 baseline, liftShare(params[Viscosity]), gather(params[Viscosity]),
                                                 smoothness(params[Viscosity]), smoothKneeDb(params[Viscosity])});
 
-            // Get there: the audio from `lookahead` samples ago. The gain chases the target from
-            // `anticipation` samples in the future, so each glide is centred on its seam.
+            // Move: we play the audio from `lookahead` samples ago. At the start of each of its frames,
+            // the gain curve is re-planned from where it is now to the end of what Honey can see;
+            // in between, the gain runs straight from one planned point to the next.
             const int64_t outSample = samplesIn - lookahead;
-            // Cuts arrive early (seen from further ahead), releases stay centred: chase the lower target.
-            const double cutTarget = targetGainDb(outSample + cutAnticipation);
-            const double target = std::min(cutTarget, targetGainDb(outSample + anticipation));
-            const double gainDb = gain.process(target, inertia, releaseInertia, sampleRate) - baseline; // baseline added back
+            if (outSample >= 0 && outSample % frameLength == 0)
+            {
+                path.advance();
+                planPath(outSample / frameLength, baseline, pathSettings);
+            }
+            const double through = outSample >= 0 ? (double)(outSample % frameLength) / frameLength : 0.0;
+            const double gainDb = path.gainAt(through) - baseline; // baseline added back
             ++samplesIn;
 
             trimDb += (trimTargetDb - trimDb) * trimCoef;
@@ -184,57 +187,100 @@ class Honey : public Numin
   private:
     // ---- playback -----------------------------------------------------------------
 
-    // Where the gain should be (dB) at `sample`: its segment's cut. In a gap, the nearest
-    // segment's cut is held for kGapHoldFrames, so the glides happen in the gap, not the voice.
-    double targetGainDb(int64_t sample)
+    // Forget segments that have finished (keeping enough behind as the solver's context), and lock
+    // the ones about to play: from kLockFrames before a segment starts, its level is final, so the
+    // path can commit to it.
+    void updateSegments(int64_t now)
     {
-        const double baseline = baselineDb(params[Viscosity]);
-        if (sample < 0)
-            return baseline;
-        const int64_t f = sample / segmenter.samplesPerFrame();
-
-        // Forget segments that have finished, keeping enough as context for the solver.
-        while (playIndex < segments.size() && segments[playIndex].end + kGapHoldFrames <= f)
+        while (playIndex < segments.size() && segments[playIndex].end <= now)
             ++playIndex;
         while (playIndex > honey::Solver::kMaxNeighbours)
         {
             segments.popFront();
             --playIndex;
         }
+        for (int i = playIndex; i < segments.size() && segments[i].start <= now + kLockFrames; ++i)
+            segments[i].locked = true;
+    }
 
-        double gapGain = baseline; // gaps sit at the baseline, so noise is never raised
-        for (int i = playIndex; i < segments.size() && segments[i].start - kGapHoldFrames <= f; ++i)
+    // Describe every frame from the one after `now` to the newest Honey can see, and plan the gain
+    // path through them. For each frame: the level it should be at (its segment's, or the baseline
+    // in a gap), how much being there matters, and how audible a gain change would be there.
+    //
+    // Audibility ("importance") is the heart of it. A change is most audible on a vowel at the
+    // height of its syllable, much less in the valley between syllables, and not at all in
+    // silence. So it's the product of two things:
+    //   voice:    is the voice sounding? 0 at the silence threshold, 1 kVoiceRampDb above it;
+    //   contrast: how far below the nearby peak (within kPeakFrames) this frame is, as
+    //             10^(-dip / kContrastDb): 1 at the peak, ~0.18 in a 3 dB valley, ~0.03 at 6 dB.
+    // Being at the segment's level matters in the same proportion (never less than kMinHold inside
+    // a segment), so the curve hits each level on the vowel and is free to travel in between.
+    void planPath(int64_t now, double baseline, const honey::GainPath::Settings& settings)
+    {
+        updateSegments(now);
+        const int64_t newest = segmenter.newestLoudnessFrame();
+        const int n = (int)std::clamp<int64_t>(newest - now, 0, honey::GainPath::kMaxFrames);
+        const double voiceFrom = segmenter.silenceThresholdDb();
+
+        int k = playIndex; // the segment at (or after) the frame being described
+        for (int i = 0; i < n; ++i)
         {
-            honey::Segment& s = segments[i];
-            s.locked = true; // it's playing (or about to): its gain is final
-            if (f >= s.start && f < s.end)
-                return s.gainDb;
-            if (i == playIndex)
-                gapGain = s.gainDb;
+            const int64_t f = now + 1 + i;
+            while (k < segments.size() && segments[k].end <= f)
+                ++k;
+            const bool inSegment = k < segments.size() && segments[k].start <= f;
+
+            const double here = segmenter.loudnessAtFrameDb(f);
+            double peak = here;
+            for (int64_t g = f - kPeakFrames; g <= std::min(f + kPeakFrames, newest); ++g)
+                peak = std::max(peak, segmenter.loudnessAtFrameDb(g));
+            const double voice = std::clamp((here - voiceFrom) / kVoiceRampDb, 0.0, 1.0);
+            const double importance = voice * std::pow(10.0, (here - peak) / kContrastDb);
+
+            pathFrames[(size_t)i] = inSegment ? honey::GainPath::Frame{segments[k].gainDb, std::max(kMinHold, importance), importance}
+                                              : honey::GainPath::Frame{baseline, 0.0, importance};
         }
-        return gapGain;
+        path.replan(pathFrames.data(), n, settings);
+    }
+
+    // The path's costs from Viscosity. The gain's "mass" is inertiaSeconds, in frames (m). Moving
+    // on a vowel costs (kMotionScale * m)^2 per step and bending costs (kBendScale * m)^4: so a move
+    // that has to cross a stretch of voice spreads over about kMotionScale * m frames, and every
+    // corner is rounded over about kBendScale * m. (Each penalty is a length raised to the power of
+    // how many neighbours it links, which is what makes those lengths come out in frames.)
+    // Upward moves pay (releaseInertia / inertia)^2 extra, so recoveries are as unhurried as
+    // releaseInertiaSeconds says.
+    //
+    // Measured on take.wav at the mark, against the old follower: the fastest gain move while a
+    // vowel is at its height fell from ~41 to ~9 dB/s, and cuts are realised just as fully.
+    static honey::GainPath::Settings pathSettingsFor(float v)
+    {
+        const double m = inertiaSeconds(v) / honey::kFrameSeconds;
+        const double release = releaseInertiaSeconds(v) / inertiaSeconds(v);
+        return {std::pow(kMotionScale * m, 2.0), std::pow(kBendScale * m, 4.0), release * release};
     }
 
     // ---- constants ----------------------------------------------------------------
 
-    // The lookahead budget. A segment must be fully decided before it starts playing, so this must
-    // cover: the longest segment (Segmenter::kMaxSegmentFrames, 0.3 s) + the time to confirm its
-    // valley (~165 ms) + the gap hold (100 ms) + the furthest read-ahead (~170 ms), with margin.
+    // The lookahead budget. A segment must be fully decided before it's locked, so this must cover:
+    // the longest segment (Segmenter::kMaxSegmentFrames, 0.3 s) + the time to confirm its valley
+    // (~165 ms) + the lock (kLockFrames, 150 ms), with margin. Whatever is left is how early the
+    // path sees each decision, and so how early (and gently) it can start moving toward it.
     // Keep it under ~1 s: Logic doesn't compensate a single plugin's latency beyond about that.
-    // If you raise any of those parts, raise this with them.
     static constexpr double kLookaheadSeconds = 0.8;
 
-    // where each move is "centered" relative to its seam. at higher values it's more Brennan Mono Rail like. The gain attenuation
-    // will start earlier so that more of it is in place before a peak and the curve is smoother, but this does come at the cost
-    // of this attenuatio happening at the end of the word before. another way to think about it: when is a move halfway-done by?
-    // i may experiment with how much we can get away with here. on paper we could be heavily pre-firing the attenuation, but i'm
-    // suspicious that our ears won't pick up on that as fast, so we may be able to get the upside of faster attenuation without feeling
-    // like a previous segment has been robbed. more to come. 1.68 is centered.
-    static constexpr double kAnticipationRatio = 2.68;
+    // A segment's level is final this long before it plays (frames; 30 = 150 ms).
+    static constexpr int kLockFrames = 30;
 
-    // how far ahead cuts are seen: at 4 inertia times, a cut is ~90% in place when its word begins
-    static constexpr double kCutAnticipationRatio = 4.0;
-    static constexpr double kMaxCutAnticipationSeconds = 0.15; // part of the lookahead budget above
+    // How audible a gain change is (see planPath). Bigger kContrastDb = valleys are less of a
+    // hiding place; kPeakFrames is how far either side "the nearby peak" is looked for (80 ms).
+    static constexpr int kPeakFrames = 16;
+    static constexpr double kContrastDb = 4.0;
+    static constexpr double kVoiceRampDb = 6.0;
+    static constexpr double kMinHold = 0.05;
+
+    // The path's costs, relative to the gain's mass (see pathSettingsFor).
+    static constexpr double kMotionScale = 2.0, kBendScale = 0.5;
 
     // ---- Viscosity: a musical range, then a push range ---------------------------------
     // 0 .. kMusicalEnd is the musical range: transparent, getting away with it. Every mapping
@@ -252,10 +298,6 @@ class Honey : public Numin
     // Releases don't get quicker in the push range: cuts can arrive faster up there, but the way
     // back out stays as unhurried as it is at the mark. Getting away with it happens on the way out.
     static double releaseInertiaSeconds(float v) { return 0.200 * std::pow(0.25, musical(v)); } // 200 .. 50 ms (mark), then held
-
-    // hold a segment's gain 150 ms into a gap. this is to safeguard against that "pumping" problem from earlier when
-    // gain recovers too quickly at the tail of a word. it's jarring.
-    static constexpr int kGapHoldFrames = 20;
 
     // loud and fast spikes in sound are surprises. this control sort of decides how much
     // of a given surprise we should remove. At 10 we're already looking at around 91% though,
@@ -298,7 +340,7 @@ class Honey : public Numin
 
     // Where the noise sits. At 0 it's "Auto": Honey finds the noise floor itself. Above 0 you set
     // it: put it where the noise is (the bottom of the valleys on the meter). Honey treats the
-    // noise, and the wobble just above it, as silence, exactly as Auto does. K-weighted dBFS, so a
+    // noise, and the wobble just above it, as silence, exactly as Auto does. In dB as Honey's Ear hears it, so a
     // little different from a plain meter. Useful for testing, since it never shifts with playback.
     static double noiseFloorDb(float v) { return -90.0 + 60.0 * v; } // -90 .. -30 dB
 
@@ -309,12 +351,13 @@ class Honey : public Numin
     // ---- state --------------------------------------------------------------------
 
     int lookahead = 1;
-    dsp::KWeighting weightL, weightR;
+    honey::Ear ear;
     dsp::DelayLine delayL, delayR;
 
     honey::Segmenter segmenter;
     honey::SegmentList segments;
-    honey::GainFollower gain;
+    honey::GainPath path;
+    std::array<honey::GainPath::Frame, honey::GainPath::kMaxFrames> pathFrames{};
     double trimDb = 0.0;
     double lastGainDb = 0.0; // the net gain on the latest sample, for the meter
 

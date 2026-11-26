@@ -1,10 +1,11 @@
 // Segmenter — Honey's "seeing": loudness, the noise floor, and where the seams go.
 //
-// Feed it the K-weighted power of every sample. It gathers 5 ms frames, tracks two
-// loudness contours and the noise floor, finds the valleys between syllables and words,
-// and turns each stretch of voice into a rated Segment in the list you pass in.
+// Feed it every 5 ms frame the Ear hears (its loudness, and how vowel-like it is). It tracks two
+// loudness contours and the noise floor, finds the valleys between syllables and words, and turns
+// each stretch of voice into a rated Segment in the list you pass in.
 #pragma once
 
+#include "Ear.h"
 #include "Segment.h"
 
 #include "../dsp/FrameHistory.h"
@@ -23,12 +24,13 @@ class Segmenter
   public:
     void prepare(double sampleRate)
     {
-        frameLength = std::max(1, (int)std::lround(kFrameSeconds * sampleRate));
+        (void)sampleRate; // everything here runs in frames
         fastAverage.prepare(kFastFrames);
         loudAverage.prepare(kLoudFrames);
         fastDb.prepare(kHistoryFrames);
         loudDb.prepare(kHistoryFrames);
         voiced.prepare(kHistoryFrames);
+        vowel.prepare(kHistoryFrames);
         reset();
     }
 
@@ -39,10 +41,9 @@ class Segmenter
         fastDb.reset();
         loudDb.reset();
         voiced.reset();
+        vowel.reset();
 
         frame = 0;
-        framePowerSum = 0.0;
-        frameSampleCount = 0;
 
         recentBlocksDb.fill(kNoFloorYetDb);
         noiseFloorDb = kNoFloorYetDb;
@@ -57,10 +58,8 @@ class Segmenter
         closedSegment = false;
     }
 
-    int samplesPerFrame() const { return frameLength; }
-
     // Set the noise floor yourself, instead of tracking it automatically: where the noise sits
-    // (K-weighted dBFS), e.g. the bottom of the valleys between phrases on the meter. Exactly like
+    // (dB, as the Ear hears it), e.g. the bottom of the valleys between phrases on the meter. Exactly like
     // the automatic floor, voice is anything clearly above it (kVoiceMarginDb), because noise
     // wobbles above its quietest moments. Pass NAN to go back to automatic; the automatic tracker
     // keeps running underneath, so switching back picks up where it left off.
@@ -69,25 +68,23 @@ class Segmenter
     // How deep a dip must be to become a seam (Honey makes it finer in its push range).
     void setValleyDepthDb(double depthDb) { valleyDepthDb = depthDb; }
 
-    // For the meter: the 30 ms loudness at a given frame (K-weighted dB), the noise floor in use
+    // The 30 ms loudness at a given frame (dB, as the Ear hears it), the noise floor in use
     // (automatic or fixed), and the level below which Honey treats the signal as silence.
+    // The newest frame whose loudness is known is newestLoudnessFrame(): the contour is centred,
+    // so it trails the input by half its length.
     double loudnessAtFrameDb(int64_t f) const { return f < 0 ? -120.0 : fastDb[f]; }
+    int64_t newestLoudnessFrame() const { return frame - 1 - kFastFrames / 2; }
     double noiseFloorInUseDb() const { return floorDb(); }
     double silenceThresholdDb() const { return floorDb() + kVoiceMarginDb; }
 
-    // Feed one sample's K-weighted power. Returns true if a segment closed, i.e. the
-    // list gained a segment and the cuts should be solved again.
-    bool process(double power, SegmentList& segments)
+    // Feed one frame from the Ear: its intensity and vowel-ness. Returns true if a segment closed,
+    // i.e. the list gained a segment and the cuts should be solved again.
+    bool addFrame(double intensity, double vowelness, SegmentList& segments)
     {
         closedSegment = false;
-        framePowerSum += power;
-        if (++frameSampleCount == frameLength)
-        {
-            analyseFrame(framePowerSum / frameLength, segments);
-            framePowerSum = 0.0;
-            frameSampleCount = 0;
-            ++frame;
-        }
+        vowel[frame] = vowelness;
+        analyseFrame(intensity, segments);
+        ++frame;
         return closedSegment;
     }
 
@@ -99,15 +96,15 @@ class Segmenter
   private:
     // ---- analysis -----------------------------------------------------------------
 
-    void analyseFrame(double power, SegmentList& segments)
+    void analyseFrame(double intensity, SegmentList& segments)
     {
         // Two loudness contours. A moving average is centred half its length back,
         // so each value is stored at the frame it actually describes.
         const int64_t fastFrame = frame - kFastFrames / 2;
-        fastDb[fastFrame] = 10.0 * std::log10(fastAverage.process(power, kFastFrames) + 1.0e-12);
-        loudDb[frame - kLoudFrames / 2] = 10.0 * std::log10(loudAverage.process(power, kLoudFrames) + 1.0e-12);
+        fastDb[fastFrame] = Ear::toDb(fastAverage.process(intensity, kFastFrames));
+        loudDb[frame - kLoudFrames / 2] = Ear::toDb(loudAverage.process(intensity, kLoudFrames));
 
-        updateNoiseFloor(power);
+        updateNoiseFloor(intensity);
         voiced[fastFrame] = fastDb[fastFrame] > floorDb() + kVoiceMarginDb ? 1.0 : 0.0;
 
         // We can only judge a frame once we've seen kValleySearchFrames beyond it.
@@ -122,13 +119,13 @@ class Segmenter
     // The quietest 50 ms block in the last 10 s, never below -70 dB. Digital silence is skipped.
     // This made need some work because if a vocal is trimmed in the beginning such that there is no
     // lead-in or silence the actual onset of the vocal would probably be treated as silence?
-    void updateNoiseFloor(double power)
+    void updateNoiseFloor(double intensity)
     {
-        blockPowerSum += power;
+        blockPowerSum += intensity;
         if (++blockFrameCount < kFloorBlockFrames)
             return;
 
-        const double blockDb = 10.0 * std::log10(blockPowerSum / blockFrameCount + 1.0e-12);
+        const double blockDb = Ear::toDb(blockPowerSum / blockFrameCount);
         if (blockDb > kDigitalSilenceDb)
         {
             recentBlocksDb[blockIndex] = blockDb;
@@ -225,12 +222,20 @@ class Segmenter
     // not its average, so this is a "soft maximum" of the 100 ms loudness. kPeakEmphasis = 1
     // is the plain power average; higher values lean smoothly toward the loudest moment. 100 ms could be up
     // to question in the future
+    //
+    // And it judges a word by its vowel: each frame counts in proportion to how vowel-like it is
+    // (never less than kConsonantWeight), so a hard onset, a "t" or an "s" can't make a word read
+    // louder than its vowel sounds.
     double rate(int64_t a, int64_t b)
     {
-        double sum = 0.0;
+        double sum = 0.0, weights = 0.0;
         for (int64_t f = a; f < b; ++f)
-            sum += std::pow(10.0, kPeakEmphasis * loudDb[f] / 10.0);
-        const double mean = sum / (double)std::max<int64_t>(1, b - a);
+        {
+            const double w = kConsonantWeight + (1.0 - kConsonantWeight) * vowel[f];
+            sum += w * std::pow(10.0, kPeakEmphasis * loudDb[f] / 10.0);
+            weights += w;
+        }
+        const double mean = sum / std::max(1.0e-9, weights);
         return 10.0 * std::log10(mean) / kPeakEmphasis;
     }
 
@@ -318,16 +323,14 @@ class Segmenter
     static constexpr double kVoiceMarginDb = 12.0;   // voice is this far above the noise floor
 
     static constexpr double kPeakEmphasis = 6.0;   // 1 = average loudness .. higher = toward the peak
+    static constexpr double kConsonantWeight = 0.25; // how much a frame with no vowel at all counts in a rating
 
     // ---- state --------------------------------------------------------------------
 
-    int frameLength = 1;
     dsp::MovingAverage fastAverage, loudAverage;
-    dsp::FrameHistory fastDb, loudDb, voiced;
+    dsp::FrameHistory fastDb, loudDb, voiced, vowel;
 
     int64_t frame = 0;
-    double framePowerSum = 0.0;
-    int frameSampleCount = 0;
 
     std::array<double, kFloorBlocks> recentBlocksDb{};
     double noiseFloorDb = kNoFloorYetDb, blockPowerSum = 0.0;

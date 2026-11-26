@@ -161,7 +161,8 @@ class Honey : public Numin
             if (ear.process(l, r) && segmenter.addFrame(ear.intensity(), ear.vowel(), segments))
                 honey::Solver::solve(segments, {viscosityWeight(params[Viscosity]), contextSeconds(params[Viscosity]),
                                                 baseline, liftShare(params[Viscosity]), gather(params[Viscosity]),
-                                                smoothness(params[Viscosity]), smoothKneeDb(params[Viscosity])});
+                                                smoothness(params[Viscosity]), smoothKneeDb(params[Viscosity]),
+                                                kSeamCost});
 
             // Move: we play the audio from `lookahead` samples ago. At the start of each of its frames,
             // the gain curve is re-planned from where it is now to the end of what Honey can see;
@@ -170,7 +171,7 @@ class Honey : public Numin
             if (outSample >= 0 && outSample % frameLength == 0)
             {
                 path.advance();
-                planPath(outSample / frameLength, baseline, pathSettings);
+                planPath(outSample / frameLength, pathSettings, params[Viscosity]);
             }
             const double through = outSample >= 0 ? (double)(outSample % frameLength) / frameLength : 0.0;
             const double gainDb = path.gainAt(through) - baseline; // baseline added back
@@ -204,43 +205,113 @@ class Honey : public Numin
     }
 
     // Describe every frame from the one after `now` to the newest Honey can see, and plan the gain
-    // path through them. For each frame: the level it should be at (its segment's, or the baseline
-    // in a gap), how much being there matters, and how audible a gain change would be there.
-    //
-    // Audibility ("importance") is the heart of it. A change is most audible on a vowel at the
-    // height of its syllable, much less in the valley between syllables, and not at all in
-    // silence. So it's the product of two things:
-    //   voice:    is the voice sounding? 0 at the silence threshold, 1 kVoiceRampDb above it;
-    //   contrast: how far below the nearby peak (within kPeakFrames) this frame is, as
-    //             10^(-dip / kContrastDb): 1 at the peak, ~0.18 in a 3 dB valley, ~0.03 at 6 dB.
-    // Being at the segment's level matters in the same proportion (never less than kMinHold inside
-    // a segment), so the curve hits each level on the vowel and is free to travel in between.
-    void planPath(int64_t now, double baseline, const honey::GainPath::Settings& settings)
+    // path through them. For each frame: the level it should be at, how much being there matters,
+    // and how audible a gain change would be there (Segmenter::audibility, the heart of it).
+    //   * In a segment: the segment's level. Being there matters in the same proportion as
+    //     audibility (never less than kMinHold), so the curve hits each level on the vowel and is
+    //     free to travel in between.
+    //   * In a trail-off (a phrase fading into a rest): kept present (see TrailOff below).
+    //   * In a gap: the level it was left at. Gaps continue, they don't reset: across a rest the
+    //     gain glides straight from one line's level to the next, never back up to the baseline in
+    //     between (which made a rise in the rest, then a swing down into the next line).
+    void planPath(int64_t now, const honey::GainPath::Settings& settings, float v)
     {
         updateSegments(now);
         const int64_t newest = segmenter.newestLoudnessFrame();
         const int n = (int)std::clamp<int64_t>(newest - now, 0, honey::GainPath::kMaxFrames);
-        const double voiceFrom = segmenter.silenceThresholdDb();
+        findTrailOffs();
 
-        int k = playIndex; // the segment at (or after) the frame being described
+        const double share = presenceShare(v), most = presenceMaxDb(v);
+        const double presenceFloor = segmenter.noiseFloorInUseDb() + kPresenceFloorMarginDb;
+        double carried = path.currentDb(); // what a gap continues
+        int k = playIndex;                 // the segment at (or after) the frame being described
+        int t = 0;                         // the trail-off at (or after) it
         for (int i = 0; i < n; ++i)
         {
             const int64_t f = now + 1 + i;
             while (k < segments.size() && segments[k].end <= f)
                 ++k;
+            while (t < numTrailOffs && trailOffs[(size_t)t].to <= f)
+                ++t;
             const bool inSegment = k < segments.size() && segments[k].start <= f;
+            const double importance = segmenter.audibility(f);
 
-            const double here = segmenter.loudnessAtFrameDb(f);
-            double peak = here;
-            for (int64_t g = f - kPeakFrames; g <= std::min(f + kPeakFrames, newest); ++g)
-                peak = std::max(peak, segmenter.loudnessAtFrameDb(g));
-            const double voice = std::clamp((here - voiceFrom) / kVoiceRampDb, 0.0, 1.0);
-            const double importance = voice * std::pow(10.0, (here - peak) / kContrastDb);
+            honey::GainPath::Frame frame{carried, 0.0, importance}; // a gap: continue
+            if (t < numTrailOffs && trailOffs[(size_t)t].from <= f)
+            {
+                TrailOff& tail = trailOffs[(size_t)t];
+                for (int64_t g = std::max(tail.from, tail.seen + 1); g <= f; ++g) // include any of it already played
+                {
+                    tail.lowestDb = std::min(tail.lowestDb, segmenter.loudnessAtFrameDb(g));
+                    if (tail.lowestDb >= presenceFloor) // only while it's clearly voice; then the lift holds
+                        tail.liftDb = std::min(most, share * (tail.peakDb - tail.lowestDb));
+                }
+                tail.seen = f;
+                frame = {tail.levelDb + tail.liftDb, std::max(kTrailHold, importance), importance};
+            }
+            else if (inSegment)
+                frame = {segments[k].gainDb, std::max(kMinHold, importance), importance};
 
-            pathFrames[(size_t)i] = inSegment ? honey::GainPath::Frame{segments[k].gainDb, std::max(kMinHold, importance), importance}
-                                              : honey::GainPath::Frame{baseline, 0.0, importance};
+            pathFrames[(size_t)i] = frame;
+            carried = frame.targetDb;
         }
         path.replan(pathFrames.data(), n, settings);
+    }
+
+    // ---- presence ------------------------------------------------------------------
+    //
+    // A phrase fading into a rest isn't a surprise, but when it falls away too fast the closeness of
+    // the voice breaks. So Honey keeps trail-offs present, gently, by one rule: it may slow the
+    // fall, never reverse it. From the loudest moment of the phrase's last word to the end of its
+    // tail, the gain rises by a share of how far the voice has fallen since that moment (measured on
+    // the lowest point so far, so the lift only ever grows), up to a cap. The tail still fades the
+    // whole way down, just more slowly. Because the lift comes from the fall itself it can't arrive
+    // early or late, or grow faster than the tail fades: no swell, no crescendo. And it stops growing
+    // once the tail nears the noise floor, so breaths and room tone are never brought forward.
+    // A little of this also makes the cuts elsewhere more transparent: a vocal that's only ever
+    // pulled down starts to sound like it's being pulled down.
+    struct TrailOff
+    {
+        int64_t from = 0, to = 0; // the word's loudest frame .. the end of its tail
+        double peakDb = 0.0;      // loudness at that moment
+        double levelDb = 0.0;     // the word's level (the Solver's), which the lift is added to
+        double lowestDb = 0.0;    // the lowest the tail has been so far (while planning)
+        double liftDb = 0.0;      // the lift so far (while planning)
+        int64_t seen = -1;        // the last frame folded into lowestDb and liftDb
+    };
+
+    // Find the trail-offs in view: every segment with a rest after it (kRestFrames of silence, or
+    // nothing decided after it for that long), traced back over the followers touching it (its tail
+    // pieces) to the word they belong to. A lone breath in a rest belongs to no word: nothing to keep.
+    void findTrailOffs()
+    {
+        numTrailOffs = 0;
+        const int64_t decided = segmenter.newestDecidedFrame();
+        for (int j = std::max(0, playIndex - 1); j < segments.size() && numTrailOffs < kMaxTrailOffs; ++j)
+        {
+            const honey::Segment& last = segments[j];
+            const int64_t restStart = last.end;
+            const int64_t restEnd = j + 1 < segments.size() ? segments[j + 1].start : decided;
+            if (restEnd - restStart < kRestFrames)
+                continue;
+
+            int w = j;
+            while (w > 0 && segments[w].prominence < 0.5 && segments[w].start - segments[w - 1].end < kRestFrames)
+                --w;
+            const honey::Segment& word = segments[w];
+            if (word.prominence < 0.5)
+                continue;
+
+            TrailOff tail;
+            tail.from = word.start;
+            for (int64_t f = word.start; f < word.end; ++f)
+                if (segmenter.loudnessAtFrameDb(f) > segmenter.loudnessAtFrameDb(tail.from))
+                    tail.from = f;
+            tail.to = last.end;
+            tail.peakDb = tail.lowestDb = segmenter.loudnessAtFrameDb(tail.from);
+            tail.levelDb = word.gainDb;
+            trailOffs[(size_t)numTrailOffs++] = tail;
+        }
     }
 
     // The path's costs from Viscosity. The gain's "mass" is inertiaSeconds, in frames (m). Moving
@@ -272,12 +343,24 @@ class Honey : public Numin
     // A segment's level is final this long before it plays (frames; 30 = 150 ms).
     static constexpr int kLockFrames = 30;
 
-    // How audible a gain change is (see planPath). Bigger kContrastDb = valleys are less of a
-    // hiding place; kPeakFrames is how far either side "the nearby peak" is looked for (80 ms).
-    static constexpr int kPeakFrames = 16;
-    static constexpr double kContrastDb = 4.0;
-    static constexpr double kVoiceRampDb = 6.0;
-    static constexpr double kMinHold = 0.05;
+    static constexpr double kMinHold = 0.05; // inside a segment, being at its level always matters this much
+
+    // Presence (see TrailOff). A rest is at least kRestFrames (150 ms) of silence after a phrase.
+    // In a trail-off, being on the presence curve matters at least kTrailHold, so the gain follows
+    // the tail's own shape. The lift stops growing kPresenceFloorMarginDb above the noise floor.
+    static constexpr int kRestFrames = 30;
+    static constexpr double kTrailHold = 0.3;
+    static constexpr double kPresenceFloorMarginDb = 18.0;
+    static constexpr int kMaxTrailOffs = 16;
+
+    // What a level difference between neighbouring segments costs to perform, relative to lambda,
+    // at a seam where a move would be fully audible (see Solver.h, the performance cost). It's
+    // priced by the seam's audibility, so across a silence it's ~free and inside a word it's dear.
+    // Measured on take.wav at the mark: the average level difference across audible seams (mostly
+    // the dips inside words) was 0.48 dB without it, 0.33 at 1, 0.19 at 4, with no change in how
+    // much Honey levels overall. Most seams are well hidden (median audibility ~0.01), so this only
+    // touches the few that aren't. Higher = a word's syllables are kept more firmly together.
+    static constexpr double kSeamCost = 2.0;
 
     // The path's costs, relative to the gain's mass (see pathSettingsFor).
     static constexpr double kMotionScale = 2.0, kBendScale = 0.5;
@@ -324,6 +407,12 @@ class Honey : public Numin
     // level of the line I'm in". At 0 Honey smooths surprises; toward 1 it pulls the vocal together.
     static double gather(float v) { return 0.7 * push(v); } // 0 (mark) .. 0.7
 
+    // Presence: how much of a trail-off's fall is given back (0.3 = it fades 70% as fast), and the
+    // most it can be lifted. Grows with Viscosity like everything else; ever so gentle in the musical
+    // range, a little more when pushing. Always less than the baseline's depth, so never above 0 dB.
+    static double presenceShare(float v) { return 0.3 * musical(v) + 0.1 * push(v); }    // 0 .. 0.3 (mark) .. 0.4
+    static double presenceMaxDb(float v) { return 1.5 * musical(v) + 1.0 * push(v); }    // 0 .. 1.5 dB (mark) .. 2.5 dB
+
     // Push range only: finer segments, so syllables inside words can be handled on their own.
     static double valleyDepthDb(float v) { return 3.0 - 1.0 * push(v); } // 3 dB (mark) .. 2 dB
 
@@ -358,6 +447,8 @@ class Honey : public Numin
     honey::SegmentList segments;
     honey::GainPath path;
     std::array<honey::GainPath::Frame, honey::GainPath::kMaxFrames> pathFrames{};
+    std::array<TrailOff, kMaxTrailOffs> trailOffs{};
+    int numTrailOffs = 0;
     double trimDb = 0.0;
     double lastGainDb = 0.0; // the net gain on the latest sample, for the meter
 

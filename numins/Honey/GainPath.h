@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <initializer_list>
 #include <utility>
 
@@ -99,7 +100,19 @@ class GainPath
 
         system.solve(plan.data());
         planned = n;
+
+        // A last line of defence: if anything upstream ever hands us a bad number, the plan is
+        // thrown away and the gain simply holds where it is, rather than a NaN reaching the audio.
+        for (int i = 0; i < n; ++i)
+            if (!std::isfinite(plan[(size_t)i]))
+            {
+                planned = 0;
+                break;
+            }
     }
+
+    // The gain (dB) playing at the start of this frame.
+    double currentDb() const { return played[1]; }
 
     // The gain (dB) a fraction 0..1 of the way through the frame now playing.
     double gainAt(double fraction) const { return played[1] + (next() - played[1]) * fraction; }

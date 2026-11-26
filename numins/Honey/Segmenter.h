@@ -74,6 +74,28 @@ class Segmenter
     // so it trails the input by half its length.
     double loudnessAtFrameDb(int64_t f) const { return f < 0 ? -120.0 : fastDb[f]; }
     int64_t newestLoudnessFrame() const { return frame - 1 - kFastFrames / 2; }
+    // The newest frame whose seams are decided: every segment ending before it is in the list.
+    int64_t newestDecidedFrame() const { return newestLoudnessFrame() - kValleySearchFrames; }
+
+    // How audible a gain change would be at frame f, 0..1. This is Honey's one definition of
+    // "where the gain can move unheard", shared by the Solver (what a decision will cost to perform)
+    // and the GainPath (where to perform it), so the two can never disagree.
+    //
+    // A change is most audible on a vowel at the height of its syllable, much less in the valley
+    // between syllables, and not at all in silence. So it's the product of two things:
+    //   voice:    is the voice sounding? 0 at the silence threshold, 1 kVoiceRampDb above it;
+    //   contrast: how far below the nearby peak (within kPeakFrames) this frame is, as
+    //             10^(-dip / kContrastDb): 1 at the peak, ~0.18 in a 3 dB valley, ~0.03 at 6 dB.
+    double audibility(int64_t f) const
+    {
+        const int64_t newest = newestLoudnessFrame();
+        const double here = loudnessAtFrameDb(f);
+        double peak = here;
+        for (int64_t g = f - kPeakFrames; g <= std::min(f + kPeakFrames, newest); ++g)
+            peak = std::max(peak, loudnessAtFrameDb(g));
+        const double voice = std::clamp((here - silenceThresholdDb()) / kVoiceRampDb, 0.0, 1.0);
+        return voice * std::pow(10.0, (here - peak) / kContrastDb);
+    }
     double noiseFloorInUseDb() const { return floorDb(); }
     double silenceThresholdDb() const { return floorDb() + kVoiceMarginDb; }
 
@@ -205,6 +227,7 @@ class Segmenter
         s.phrase = phrase;
         s.loudnessDb = rate(s.start, s.end);
         s.aboveFloorDb = s.loudnessDb - floorDb();
+        s.seamAudibility = seamAudibility(s.start);
         segments.push(s);
 
         foldValley(segments);
@@ -280,6 +303,8 @@ class Segmenter
             segments[k - 1].end = dip.end;
         else
             segments[k + 1].start = dip.start;
+        if (hasRight) // its start, and so its seam, has moved
+            segments[k + 1].seamAudibility = seamAudibility(segments[k + 1].start);
 
         if (hasLeft)
         {
@@ -294,7 +319,25 @@ class Segmenter
         segments.erase(k);
     }
 
+    // How audible a level change at a seam would be: the quietest moment near it, since that's
+    // where the GainPath will make the move. Across a silence that's ~0; inside a word, where the
+    // dip is shallow, it stays high.
+    double seamAudibility(int64_t start) const
+    {
+        double quietest = 1.0;
+        for (int64_t f = start - kSeamFrames; f <= start + kSeamFrames; ++f)
+            quietest = std::min(quietest, audibility(f));
+        return quietest;
+    }
+
     // ---- constants ----------------------------------------------------------------
+
+    // Audibility (see audibility()). Bigger kContrastDb = valleys are less of a hiding place;
+    // kPeakFrames is how far either side "the nearby peak" is looked for (80 ms).
+    static constexpr int kPeakFrames = 16;
+    static constexpr double kContrastDb = 4.0;
+    static constexpr double kVoiceRampDb = 6.0;
+    static constexpr int kSeamFrames = 8; // a seam's move can happen within 40 ms either side of it
 
     static constexpr int kFastFrames = 6;           // 30 ms contour: finds the valleys
     static constexpr int kLoudFrames = 20;          // 100 ms of integration. At smaller values, quick events (like transients)

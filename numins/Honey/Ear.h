@@ -100,7 +100,10 @@ class Ear
     // Intensity to dB. Inverts the power law, so a steady sound in one band reads as its weighted
     // power in dB; kCalibrationDb sets the whole scale so a sung vowel reads about where K-weighting
     // read it, which keeps the Noise floor range and the meter familiar.
-    static double toDb(double intensity) { return (10.0 / kExponent) * std::log10(intensity + 1.0e-30) + kCalibrationDb; }
+    // Never below a tiny floor: averages of intensity are running sums, and in near-silence after
+    // something loud their rounding error can leave them a hair below zero (around 1e-17), whose log
+    // is NaN. One NaN frame used to poison Honey's whole gain plan for that moment.
+    static double toDb(double intensity) { return (10.0 / kExponent) * std::log10(std::max(intensity, 1.0e-30)) + kCalibrationDb; }
 
   private:
     static constexpr int kBands = 5;

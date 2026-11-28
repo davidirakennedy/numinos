@@ -9,6 +9,7 @@
 //   --ab SECONDS     alternate dry/wet every SECONDS (quick A/B listening)
 //   --block N        block size (default 512)
 //   --tail SECONDS   extra silence after the input, to hear reverb/delay tails
+//   --sidechain WAV  a second file for Numins that listen to another track (same sample rate)
 //
 // No JUCE here: WAV I/O is dr_wav, so this builds in seconds.
 
@@ -91,7 +92,8 @@ int usage()
                  "usage: numin-render --list\n"
                  "       numin-render <Numin> --info\n"
                  "       numin-render <Numin> <in.wav> [out.wav] [Param=0..1 ...]\n"
-                 "                    [--sweep Param] [--ab seconds] [--block N] [--tail seconds]\n");
+                 "                    [--sweep Param] [--ab seconds] [--block N] [--tail seconds]\n"
+                 "                    [--sidechain other.wav]\n");
     return 2;
 }
 
@@ -124,7 +126,7 @@ int main(int argc, char** argv)
     }
 
     // ---- arguments --------------------------------------------------------
-    std::string inPath = argv[2], outPath;
+    std::string inPath = argv[2], outPath, sidechainPath;
     int sweepParam = -1, block = 512;
     double abSeconds = 0, tailSeconds = 0;
 
@@ -155,6 +157,8 @@ int main(int argc, char** argv)
             block = std::max(1, std::atoi(next().c_str()));
         else if (arg == "--tail")
             tailSeconds = std::atof(next().c_str());
+        else if (arg == "--sidechain")
+            sidechainPath = next();
         else if (auto eq = arg.find('='); eq != std::string::npos)
         {
             int p = findParam(*numin, arg.substr(0, eq));
@@ -202,6 +206,36 @@ int main(int argc, char** argv)
     }
     drwav_free(data, nullptr);
 
+    // ---- sidechain (optional): padded with silence or cut to the input's length ----
+    std::vector<float> scL, scR;
+    if (!sidechainPath.empty())
+    {
+        unsigned int scChannels = 0, scRate = 0;
+        drwav_uint64 scFrames = 0;
+        float* sc = drwav_open_file_and_read_pcm_frames_f32(sidechainPath.c_str(), &scChannels, &scRate, &scFrames, nullptr);
+        if (!sc)
+        {
+            std::fprintf(stderr, "Couldn't read sidechain '%s'\n", sidechainPath.c_str());
+            return 1;
+        }
+        if (scRate != rate)
+        {
+            std::fprintf(stderr, "The sidechain is at %u Hz and the input at %u Hz: they need to match.\n", scRate, rate);
+            drwav_free(sc, nullptr);
+            return 1;
+        }
+        if (!numin->usesSidechain())
+            std::fprintf(stderr, "(%s doesn't listen to a sidechain; ignoring it)\n", numin->name());
+        scL.assign(frames, 0.0f);
+        scR.assign(frames, 0.0f);
+        for (size_t i = 0; i < std::min<size_t>(frames, (size_t)scFrames); ++i)
+        {
+            scL[i] = sc[i * scChannels];
+            scR[i] = sc[i * scChannels + (scChannels > 1 ? 1 : 0)];
+        }
+        drwav_free(sc, nullptr);
+    }
+
     // ---- process ------------------------------------------------------------
     numin->prepare(rate);
     auto t0 = std::chrono::steady_clock::now();
@@ -210,6 +244,8 @@ int main(int argc, char** argv)
         int n = (int)std::min<size_t>(block, frames - pos);
         if (sweepParam >= 0)
             numin->setParam(sweepParam, (float)pos / (float)frames);
+        if (!scL.empty())
+            numin->setSidechain(&scL[pos], &scR[pos]);
         numin->process(&inL[pos], &inR[pos], &outL[pos], &outR[pos], n);
     }
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

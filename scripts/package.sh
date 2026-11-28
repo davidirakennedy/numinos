@@ -20,7 +20,8 @@ gen=(); command -v ninja >/dev/null && gen=(-G Ninja)
 
 echo "== Building Numinos $VERSION (universal) =="
 cmake -S . -B "$OUT" "${gen[@]}" -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DNUMINOS_INSTALL_ON_BUILD=OFF
+    -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DNUMINOS_INSTALL_ON_BUILD=OFF \
+    -DNUMINOS_INCLUDE_SHOP=OFF # releases ship only the public Numins
 cmake --build "$OUT" --config Release --target Numinos_AU Numinos_VST3 numin-check
 "$OUT/tools/numin-check" >/dev/null || { echo "numin-check failed — not packaging"; exit 1; }
 

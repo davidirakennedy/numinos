@@ -9,7 +9,8 @@
 //   * output differs depending on block size (a classic state bug)
 //   * output differs after reset() (state that reset() forgot to clear)
 //   * in-place processing (in == out) gives a different result
-// and it warns (without failing) if output gets very loud.
+// A Numin that listens to a sidechain gets all of that twice: with nothing connected, and with a
+// sidechain playing. And it warns (without failing) if output gets very loud.
 //
 // Exit code is non-zero on failure, so CI can run it on every push.
 
@@ -55,8 +56,9 @@ Stereo makeInput(size_t frames, unsigned seed)
     return s;
 }
 
-// Process `in` with a given block-size pattern. blockSize <= 0 means random sizes.
-Stereo run(Numin& n, const Stereo& in, int blockSize, unsigned seed = 1)
+// Process `in` with a given block-size pattern. blockSize <= 0 means random sizes. `sidechain`,
+// if given, is handed over block by block, lined up with the input.
+Stereo run(Numin& n, const Stereo& in, int blockSize, const Stereo* sidechain, unsigned seed = 1)
 {
     Stereo out(in.l.size());
     std::mt19937 rng(seed);
@@ -65,6 +67,7 @@ Stereo run(Numin& n, const Stereo& in, int blockSize, unsigned seed = 1)
     {
         int bs = blockSize > 0 ? blockSize : sizes(rng);
         int count = (int)std::min<size_t>(bs, in.l.size() - pos);
+        n.setSidechain(sidechain ? &sidechain->l[pos] : nullptr, sidechain ? &sidechain->r[pos] : nullptr);
         n.process(&in.l[pos], &in.r[pos], &out.l[pos], &out.r[pos], count);
         pos += count;
     }
@@ -130,21 +133,26 @@ Result checkNumin(const NuminEntry& entry)
     const char* setNames[] = {"defaults", "all 0", "all 1"};
 
     double worstSpeed = 1e9;
+    const int sidechainModes = n->usesSidechain() ? 2 : 1; // without, then with
     for (double sr : rates)
+        for (int withSidechain = 0; withSidechain < sidechainModes; ++withSidechain)
     {
         const Stereo input = makeInput((size_t)(sr * 0.5), (unsigned)sr);
+        const Stereo sidechainInput = makeInput((size_t)(sr * 0.5), (unsigned)sr + 7);
+        const Stereo* sidechain = withSidechain ? &sidechainInput : nullptr;
         for (size_t s = 0; s < sets.size(); ++s)
         {
-            char where[96];
-            std::snprintf(where, sizeof(where), "@%.0f Hz, params %s", sr,
-                          s < 3 ? setNames[s] : ("random #" + std::to_string(s - 2)).c_str());
+            char where[128];
+            std::snprintf(where, sizeof(where), "@%.0f Hz, params %s%s", sr,
+                          s < 3 ? setNames[s] : ("random #" + std::to_string(s - 2)).c_str(),
+                          withSidechain ? ", with sidechain" : "");
 
             for (int i = 0; i < n->numParams(); ++i)
                 n->setParam(i, sets[s][i]);
 
             n->prepare(sr);
             auto t0 = std::chrono::steady_clock::now();
-            Stereo ref = run(*n, input, 512);
+            Stereo ref = run(*n, input, 512, sidechain);
             double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             worstSpeed = std::min(worstSpeed, (input.l.size() / sr) / std::max(secs, 1e-9));
 
@@ -157,7 +165,7 @@ Result checkNumin(const NuminEntry& entry)
                 res.warn(std::string("output peaks above +24 dBFS ") + where);
 
             n->reset();
-            Stereo again = run(*n, input, 512);
+            Stereo again = run(*n, input, 512, sidechain);
             if (maxDiff(ref, again) > 1e-6)
             {
                 res.fail(std::string("output changes after reset() — some state isn't cleared ") + where);
@@ -165,7 +173,7 @@ Result checkNumin(const NuminEntry& entry)
             }
 
             n->reset();
-            Stereo jagged = run(*n, input, 0);
+            Stereo jagged = run(*n, input, 0, sidechain);
             if (maxDiff(ref, jagged) > 1e-5)
             {
                 res.fail(std::string("output depends on block size (per-block smoothing or state?) ") + where);
@@ -177,6 +185,7 @@ Result checkNumin(const NuminEntry& entry)
             for (size_t pos = 0; pos < inPlace.l.size(); pos += 512)
             {
                 int c = (int)std::min<size_t>(512, inPlace.l.size() - pos);
+                n->setSidechain(sidechain ? &sidechain->l[pos] : nullptr, sidechain ? &sidechain->r[pos] : nullptr);
                 n->process(&inPlace.l[pos], &inPlace.r[pos], &inPlace.l[pos], &inPlace.r[pos], c);
             }
             if (maxDiff(ref, inPlace) > 1e-6)

@@ -4,8 +4,10 @@
 #include "Registry.h"
 
 #include "Honey/Honey.h"
+#include "Kite/Kite.h"
 // @numin-includes
 
+#include <algorithm>
 #include <cctype>
 
 namespace numinos
@@ -13,10 +15,10 @@ namespace numinos
 
 namespace
 {
-template <typename T> NuminEntry entry()
+template <typename T> NuminEntry entry(Status status)
 {
     static const T prototype; // only used to read name/category
-    return {prototype.name(), prototype.category(), []() -> std::unique_ptr<Numin> {
+    return {prototype.name(), prototype.category(), status, []() -> std::unique_ptr<Numin> {
                 auto n = std::make_unique<T>();
                 n->resetParamsToDefaults();
                 return n;
@@ -24,12 +26,21 @@ template <typename T> NuminEntry entry()
 }
 } // namespace
 
+// Each Numin is Public or InTheShop (see Registry.h). To release one, change its InTheShop to Public.
 const std::vector<NuminEntry>& allNumins()
 {
-    static const std::vector<NuminEntry> list = {
-        entry<Honey>(),
-        // @numin-entries
-    };
+    static const std::vector<NuminEntry> list = [] {
+        std::vector<NuminEntry> all = {
+            entry<Honey>(Status::Public),
+            entry<Kite>(Status::InTheShop),
+            // @numin-entries
+        };
+#if !NUMINOS_INCLUDE_SHOP // a release build: leave out what's still in the shop
+        all.erase(std::remove_if(all.begin(), all.end(), [](const NuminEntry& e) { return e.status != Status::Public; }),
+                  all.end());
+#endif
+        return all;
+    }();
     return list;
 }
 

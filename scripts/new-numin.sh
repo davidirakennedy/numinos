@@ -12,7 +12,7 @@ mkdir -p "numins/$name"
 sed "s/__NAME__/$name/g" numins/_Template/Template.h > "numins/$name/$name.h"
 
 perl -pi -e "s|^// \@numin-includes|#include \"$name/$name.h\"\n// \@numin-includes|" numins/Registry.cpp
-perl -pi -e "s|^(\s*)// \@numin-entries|\1entry<$name>(),\n\1// \@numin-entries|" numins/Registry.cpp
+perl -pi -e "s|^(\s*)// \@numin-entries|\1entry<$name>(Status::InTheShop),\n\1// \@numin-entries|" numins/Registry.cpp
 
 echo "Created numins/$name/$name.h and registered it in numins/Registry.cpp."
 echo "Try it:  scripts/listen.sh $name samples/<file>.wav --watch"

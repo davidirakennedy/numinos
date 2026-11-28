@@ -6,7 +6,8 @@
 // safety checker. You write DSP here and never touch plugin boilerplate.
 //
 // Conventions:
-//   * Stereo in, stereo out. Always.
+//   * Stereo in, stereo out. Always. Optionally, a sidechain too: a second stereo input to
+//     listen to (another track, a submix), which never reaches the output on its own.
 //   * Parameters are normalized floats in 0..1. Each Numin maps them to real
 //     units itself (dB, Hz, ...) and says how to display them.
 //   * At most kMaxParams parameters.
@@ -79,7 +80,7 @@ class Numin
     // A Numin can publish a few live values for the plugin to draw: a Trace scrolls across a
     // strip over time (several traces share one dB scale), a Line is drawn across it (a level, say)
     // and a Shade shades everything below a level. A Gain is the gain the Numin is applying right
-    // now, in dB (0 = unity), drawn as a needle beside the strip. The plugin reads them on the
+    // now, in dB (0 = unity), shown as a reading in the corner of the strip. The plugin reads them on the
     // audio thread straight after each process() call, so no extra thread safety is needed here.
     // Most Numins have none.
     // Put the input Trace first: while the plugin is bypassed it draws every other Trace as
@@ -109,6 +110,18 @@ class Numin
         high = 0.0f;
     }
 
+    // ---- sidechain (optional) ---------------------------------------------
+    // A Numin that listens to another track says so here. The host then hands it the sidechain's
+    // audio before each process() call: `frames` samples per side, valid for that one call. With
+    // nothing connected (or a host that can't), the pointers are null, and the Numin must still
+    // work. They're kept as they were given: process() reads them, it doesn't own them.
+    virtual bool usesSidechain() const { return false; }
+    void setSidechain(const float* left, const float* right)
+    {
+        sidechainL = left;
+        sidechainR = right;
+    }
+
     // How many samples late this Numin's output is (lookahead). Valid after prepare().
     // The plugin reports it so the DAW can line the track back up with the rest of the mix.
     virtual int latencySamples() const { return 0; }
@@ -121,6 +134,8 @@ class Numin
   protected:
     double sampleRate = 44100.0;
     float params[kMaxParams] = {};
+    const float* sidechainL = nullptr; // this block's sidechain, or null (see setSidechain)
+    const float* sidechainR = nullptr;
 
     // ---- small helpers for subclasses ------------------------------------
     template <typename... Args> static std::string fmt(const char* f, Args... args)

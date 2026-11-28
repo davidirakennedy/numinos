@@ -1,4 +1,5 @@
-// Ear — Honey's hearing: how loud each 5 ms frame *sounds*, and how vowel-like it is.
+// Ear — hearing: how loud each short frame of audio *sounds*, and how vowel-like it is.
+// Shared by the Numins that listen to a voice (Honey, Kite).
 //
 // A loudness meter's K-weighting is one filter and one power sum. It's built for whole mixes, and on
 // a voice it hears the wrong things: sibilance and consonants read loud (K-weighting lifts
@@ -15,33 +16,32 @@
 //      spectrum (a vowel, rich in harmonics) is louder than the same power squeezed into one band
 //      (a hiss). This is the core of how loudness models (Zwicker, Moore-Glasberg) work, kept tiny.
 //   4. Vowel-ness. The share of a frame's power below ~2 kHz says how voiced it is: near 1 in a
-//      vowel, near 0 in an "s". The Segmenter uses it to judge each segment by its vowel.
+//      vowel, near 0 in an "s". Honey judges each segment by its vowel.
 //
 // The output is "intensity": a linear quantity whose *average* over time is meaningful (loudness
 // adds up over time roughly like this), and toDb() turns it into dB. For a steady sound in one band
 // that's an ordinary dB scale, so everything downstream (noise floor, margins) keeps working in dB.
 #pragma once
 
-#include "Segment.h"
-
-#include "../dsp/Biquad.h"
+#include "Biquad.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 
-namespace numinos::honey
+namespace numinos::dsp
 {
 
 class Ear
 {
   public:
-    void prepare(double sampleRate)
+    // frameSeconds: how long each frame is (Honey and Kite both use 5 ms).
+    void prepare(double sampleRate, double frameSeconds)
     {
-        frameLength = std::max(1, (int)std::lround(kFrameSeconds * sampleRate));
+        frameLength = std::max(1, (int)std::lround(frameSeconds * sampleRate));
         for (int b = 0; b < kBands; ++b)
         {
-            left[b] = dsp::Biquad::bandPass(kBandHz[b], kBandQ, sampleRate);
+            left[b] = Biquad::bandPass(kBandHz[b], kBandQ, sampleRate);
             right[b] = left[b];
         }
         reset();
@@ -130,10 +130,10 @@ class Ear
     static constexpr double kVowelFrom = 0.35, kVowelTo = 0.75;
 
     int frameLength = 1;
-    std::array<dsp::Biquad, kBands> left, right;
+    std::array<Biquad, kBands> left, right;
     std::array<double, kBands> bandPower{};
     int sampleCount = 0;
     double lastIntensity = 0.0, lastVowel = 0.0;
 };
 
-} // namespace numinos::honey
+} // namespace numinos::dsp

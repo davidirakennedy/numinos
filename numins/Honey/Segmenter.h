@@ -5,9 +5,9 @@
 // each stretch of voice into a rated Segment in the list you pass in.
 #pragma once
 
-#include "Ear.h"
 #include "Segment.h"
 
+#include "../dsp/Ear.h"
 #include "../dsp/FrameHistory.h"
 #include "../dsp/MovingAverage.h"
 
@@ -123,8 +123,8 @@ class Segmenter
         // Two loudness contours. A moving average is centred half its length back,
         // so each value is stored at the frame it actually describes.
         const int64_t fastFrame = frame - kFastFrames / 2;
-        fastDb[fastFrame] = Ear::toDb(fastAverage.process(intensity, kFastFrames));
-        loudDb[frame - kLoudFrames / 2] = Ear::toDb(loudAverage.process(intensity, kLoudFrames));
+        fastDb[fastFrame] = dsp::Ear::toDb(fastAverage.process(intensity, kFastFrames));
+        loudDb[frame - kLoudFrames / 2] = dsp::Ear::toDb(loudAverage.process(intensity, kLoudFrames));
 
         updateNoiseFloor(intensity);
         voiced[fastFrame] = fastDb[fastFrame] > floorDb() + kVoiceMarginDb ? 1.0 : 0.0;
@@ -147,7 +147,7 @@ class Segmenter
         if (++blockFrameCount < kFloorBlockFrames)
             return;
 
-        const double blockDb = Ear::toDb(blockPowerSum / blockFrameCount);
+        const double blockDb = dsp::Ear::toDb(blockPowerSum / blockFrameCount);
         if (blockDb > kDigitalSilenceDb)
         {
             recentBlocksDb[blockIndex] = blockDb;

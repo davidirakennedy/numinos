@@ -25,6 +25,19 @@ struct Biquad
         return f;
     }
 
+    // A gentle first-order low-pass (6 dB per octave), as a biquad with its second-order terms at 0.
+    // Its complement (x minus this) is the matching high-pass, and the two are at right angles in
+    // phase at every frequency (90 degrees apart), so their energies always add up to exactly the
+    // input's. Steeper filters don't have that property.
+    static Biquad lowPassFirstOrder(double cutoffHz, double sampleRate)
+    {
+        const double k = std::tan(M_PI * cutoffHz / sampleRate);
+        Biquad f;
+        f.b0 = f.b1 = k / (1.0 + k);
+        f.a1 = (k - 1.0) / (k + 1.0);
+        return f;
+    }
+
     double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0; // coefficients (a0 is 1)
     double s1 = 0.0, s2 = 0.0;                               // state
 

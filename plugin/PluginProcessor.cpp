@@ -34,7 +34,8 @@ class NuminParameter : public juce::AudioParameterFloat
 NuminosProcessor::NuminosProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
-                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)
+                         .withInput("Sidechain", juce::AudioChannelSet::stereo(), false)),
       params(*this, nullptr, "Numinos", makeLayout())
 {
     for (int i = 0; i < numinos::kMaxParams; ++i)
@@ -135,6 +136,8 @@ void NuminosProcessor::prepareToPlay(double newSampleRate, int samplesPerBlock)
 {
     sampleRate = newSampleRate;
     scratch.assign((size_t)juce::jmax(samplesPerBlock, 4096), 0.0f);
+    sidechainL.assign(scratch.size(), 0.0f);
+    sidechainR.assign(scratch.size(), 0.0f);
     player.prepare(newSampleRate);
     dryDelay.setSize(2, (int)(kMaxLatencySeconds * newSampleRate) + 1);
     dryDelay.clear();
@@ -159,14 +162,28 @@ bool NuminosProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
     const auto in = layouts.getMainInputChannelSet(), out = layouts.getMainOutputChannelSet();
     if (out != juce::AudioChannelSet::stereo() && out != juce::AudioChannelSet::mono())
         return false;
-    return in == out || (in == juce::AudioChannelSet::mono() && out == juce::AudioChannelSet::stereo());
+    if (in != out && !(in == juce::AudioChannelSet::mono() && out == juce::AudioChannelSet::stereo()))
+        return false;
+
+    // The sidechain: off, mono or stereo.
+    if (layouts.inputBuses.size() > 1)
+    {
+        const auto sc = layouts.getChannelSet(true, 1);
+        return sc.isDisabled() || sc == juce::AudioChannelSet::mono() || sc == juce::AudioChannelSet::stereo();
+    }
+    return true;
 }
 
 void NuminosProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
-    const int numIn = getTotalNumInputChannels(), numOut = getTotalNumOutputChannels();
+    const int numIn = getMainBusNumInputChannels(), numOut = getMainBusNumOutputChannels();
     const int frames = buffer.getNumSamples();
+
+    // The sidechain, if one is connected, copied out first: on a mono track the right output
+    // channel shares its memory with the sidechain's first channel. (A host that sends a bigger
+    // block than it promised in prepareToPlay gets no sidechain for that block.)
+    const bool hasSidechain = copySidechain(buffer, frames);
 
     if (numIn == 1 && numOut == 2) // mono track: duplicate into the right channel
         buffer.copyFrom(1, 0, buffer, 0, 0, frames);
@@ -192,6 +209,7 @@ void NuminosProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
     if (numOut >= 2)
     {
         float* right = buffer.getWritePointer(1);
+        numin->setSidechain(hasSidechain ? sidechainL.data() : nullptr, hasSidechain ? sidechainR.data() : nullptr);
         numin->process(left, right, left, right, frames);
     }
     else
@@ -201,15 +219,32 @@ void NuminosProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
         {
             const int n = juce::jmin((int)scratch.size(), frames - pos);
             std::copy(left + pos, left + pos + n, scratch.begin());
+            numin->setSidechain(hasSidechain ? sidechainL.data() + pos : nullptr, hasSidechain ? sidechainR.data() + pos : nullptr);
             numin->process(left + pos, scratch.data(), left + pos, scratch.data(), n);
         }
     }
+    numin->setSidechain(nullptr, nullptr); // only valid for this block
 
     const bool bypassed = *bypassValue > 0.5f;
     publishMeters(bypassed);
 
     if (bypassed)
         readDelayedDry(buffer, frames); // dry, but exactly as late as the processed sound
+}
+
+bool NuminosProcessor::copySidechain(juce::AudioBuffer<float>& buffer, int frames)
+{
+    if (getBusCount(true) < 2 || !getBus(true, 1)->isEnabled() || frames > (int)sidechainL.size())
+        return false;
+    const auto sidechain = getBusBuffer(buffer, true, 1);
+    const int channels = sidechain.getNumChannels();
+    if (channels == 0)
+        return false;
+    const float* l = sidechain.getReadPointer(0);
+    const float* r = sidechain.getReadPointer(channels > 1 ? 1 : 0); // mono: the same in both
+    std::copy(l, l + frames, sidechainL.begin());
+    std::copy(r, r + frames, sidechainR.begin());
+    return true;
 }
 
 void NuminosProcessor::publishMeters(bool bypassed)

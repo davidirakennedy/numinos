@@ -67,6 +67,7 @@ class NuminosProcessor : public juce::AudioProcessor
 
   private:
     juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
+    bool copySidechain(juce::AudioBuffer<float>& buffer, int frames); // true if there is one (only reads it)
     void publishMeters(bool bypassed); // audio thread: copy the Numin's meters for the UI
     std::unique_ptr<juce::XmlElement> stateXml();
     void restoreFromXml(const juce::XmlElement& xml);
@@ -79,6 +80,7 @@ class NuminosProcessor : public juce::AudioProcessor
 
     double sampleRate = 44100.0;
     std::vector<float> scratch; // right channel when running mono
+    std::vector<float> sidechainL, sidechainR; // this block's sidechain, copied out of the host's buffer
 
     // A copy of the dry input, delayed by the current Numin's latency, so bypass (and the
     // brief pass-through while switching Numins) stays lined up with the processed sound.

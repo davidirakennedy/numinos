@@ -12,7 +12,7 @@
 //      Mix-only: the latency is large.
 //
 // The stages live in their own files:
-//   Ear.h           — hearing: perceived loudness and vowel-ness per frame (step 1)
+//   ../dsp/Ear.h    — hearing: perceived loudness and vowel-ness per frame (step 1, shared)
 //   Segmenter.h     — seeing: noise floor, seams, rating                   (steps 2–3)
 //   Solver.h        — judging and deciding: prediction and the levels      (steps 3–4)
 //   GainPath.h      — moving: the planned gain curve                       (step 5)
@@ -22,8 +22,8 @@
 
 #include "../Numin.h"
 #include "../dsp/DelayLine.h"
+#include "../dsp/Ear.h"
 
-#include "Ear.h"
 #include "GainPath.h"
 #include "Segment.h"
 #include "Segmenter.h"
@@ -69,7 +69,7 @@ class Honey : public Numin
     {
         lookahead = (int)std::lround(kLookaheadSeconds * newSampleRate);
 
-        ear.prepare(newSampleRate);
+        ear.prepare(newSampleRate, honey::kFrameSeconds);
         delayL.prepare(lookahead);
         delayR.prepare(lookahead);
         segmenter.prepare(newSampleRate);
@@ -440,7 +440,7 @@ class Honey : public Numin
     // ---- state --------------------------------------------------------------------
 
     int lookahead = 1;
-    honey::Ear ear;
+    dsp::Ear ear;
     dsp::DelayLine delayL, delayR;
 
     honey::Segmenter segmenter;

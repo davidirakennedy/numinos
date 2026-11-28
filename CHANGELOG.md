@@ -7,6 +7,32 @@ MAJOR.MINOR.PATCH (still 0.x while things are early).
 
 ## Unreleased
 
+### Added (experimental)
+- **Kite:** a new Numin, found by accident while working on another one (Bloom, since dropped).
+  Its engine pushed far and fast: each harmonic gets a new random phase every frame, so transients swoop in like a scratched
+  record, pitched tails bob and bounce, and a voice turns into an alien through a tin mic. Lovely
+  on drum loops and drones. For now it's that engine as it was when this turned up; where it goes
+  next is to be found by ear.
+- **Sidechains:** any Numin can now listen to a second input (another track or a submix): the
+  plugin has an optional sidechain bus, `numin-render` takes `--sidechain other.wav`, and
+  `numin-check` tests sidechain Numins both with and without one.
+- **Public or in the shop:** each Numin in `numins/Registry.cpp` is marked `Public` or
+  `InTheShop`. Your own builds include both (shop Numins sit under "In the shop" in the
+  drop-down); releases (`scripts/package.sh`, which builds with `NUMINOS_INCLUDE_SHOP=OFF`) ship
+  only the public ones. New Numins start in the shop. Kite is in the shop for now.
+
+### Changed
+- **A new look, "Deep Resin":** the window is dark obsidian, and honey-coloured resin is the only
+  real light. The meter is a block of resin with the sound glowing gold inside it; each control is
+  a column of resin that fills with light as you turn it up (drag from anywhere on it, Shift for
+  finer moves, double-click to reset, click the value to type one). The Numin's name is the menu:
+  click it and every Numin drops down under it with its blurb. While bypassed, the light drains
+  out of the resin. A Numin's Gain is now a reading in the meter's corner instead of a needle.
+  Every Numin gets this without any changes of its own.
+- **Honey:** its Ear now lives with the shared building blocks (`numins/dsp/Ear.h`), so other
+  Numins can hear the same way. No change in sound.
+- The spectral engine Kite uses lives in `numins/dsp/Spectrum.h`, ready for others.
+
 ### Changed (experimental)
 - **Honey:** a new ear. Loudness is heard in five bands, weighted by how sensitive hearing is in
   each and added the way loudness adds, instead of one K-weighted power sum. Sibilance and
